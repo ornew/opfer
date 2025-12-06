@@ -1,0 +1,52 @@
+[project]
+name = "opfer"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pillow>=12.0.0",
+    "pydantic>=2.12.5",
+]
+
+[project.optional-dependencies]
+google_genai = [
+    "google-genai>=1.53.0",
+]
+opentelemetry = [
+    "opentelemetry-api>=1.39.1",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.39.1",
+    "opentelemetry-sdk>=1.39.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/opfer",
+]
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["src"]
+exclude = [
+  "**/__pycache__",
+  "**/*_pb2.py",
+  "**/*_pb2.pyi",
+  "**/*_pb2_grpc.py",
+]
+venvPath = "."
+venv = ".venv"
+executionEnvironments = [
+  { root = "./src", extraPaths = ["./src"] }
+]
+
+[tool.ruff]
+exclude = [
+  "**/__pycache__",
+  "**/*_pb2.py",
+  "**/*_pb2.pyi",
+  "**/*_pb2_grpc.py",
+]
