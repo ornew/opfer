@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-google_genai = [
+google-genai = [
     "google-genai>=1.53.0",
 ]
 opentelemetry = [

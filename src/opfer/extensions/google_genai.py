@@ -7,8 +7,6 @@ import google.genai.errors
 import google.genai.types
 from pydantic import BaseModel
 
-from opfer.blob import Blob, upload_blob
-from opfer.core import Agent, Tool
 from opfer.errors import (
     ModelBehaviorError,
     ModelIncompleteError,
@@ -16,16 +14,24 @@ from opfer.errors import (
     RetryableError,
     UserError,
 )
-from opfer.logging import logger
-from opfer.provider import Chat, ModelProvider
-from opfer.retry import retry
+from opfer.internal.core import (
+    Agent,
+    Tool,
+    download_part_blob,
+    upload_blob,
+)
+from opfer.internal.logging import logger
+from opfer.internal.retry import retry
 from opfer.types import (
     AgentResponse,
     AgentResponseMetadata,
+    Blob,
+    Chat,
     Content,
     MediaResolution,
     MediaResolutionLevel,
     ModalityTokenCount,
+    ModelProvider,
     Part,
     PartBlob,
     PartFunctionCall,
@@ -37,7 +43,6 @@ from opfer.types import (
     Role,
     TokenModality,
     Usage,
-    download_part_blob,
 )
 
 
@@ -96,9 +101,9 @@ class GoogleAgentProviderChat(Chat):
     def history(self) -> list[Content]:
         return self._history
 
-    async def send[TOutput](
+    async def send[T](
         self,
-        agent: Agent[TOutput],
+        agent: Agent[T],
         input: list[Content],
         instruction: Content | None = None,
     ) -> AgentResponse:
@@ -231,9 +236,9 @@ class GoogleAgentProviderChat(Chat):
         )
 
     @retry(errors=(RetryableError,))
-    async def _generate[TOutput](
+    async def _generate[T](
         self,
-        agent: Agent[TOutput],
+        agent: Agent[T],
         contents: google.genai.types.ContentListUnion,
         system_instruction: google.genai.types.ContentUnion | None,
     ):

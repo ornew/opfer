@@ -7,29 +7,24 @@ from contextlib import asynccontextmanager
 
 from PIL import Image
 
-from opfer.artifacts import (
-    File,
-    download_artifact,
-    reset_artifact_storage,
-    set_artifact_storage,
-    upload_artifact,
-)
-from opfer.blob import Blob, reset_blob_storage, set_blob_storage
-from opfer.core import Agent
-from opfer.logging import logger
-from opfer.provider import (
+from opfer import (
     DefaultModelProviderRegistry,
-    get_model_provider_registry,
-    reset_model_provider_registry,
-    set_model_provider_registry,
-)
-from opfer.tracing import (
+    Workflow,
+    agent,
+    download_artifact,
     get_current_span,
+    get_model_provider_registry,
+    reset_artifact_storage,
+    reset_blob_storage,
+    reset_model_provider_registry,
+    set_artifact_storage,
+    set_blob_storage,
+    set_model_provider_registry,
     trace,
     tracer,
+    upload_artifact,
 )
-from opfer.types import ModelConfig
-from opfer.workflow import Workflow
+from opfer.types import Blob, File, ModelConfig
 
 
 class InMemoryBlobStorage:
@@ -87,7 +82,7 @@ async def div(a: float, b: float) -> float:
     return a / b
 
 
-math_v1 = Agent(
+math_v1 = agent(
     id="math_v1",
     display_name="Math Agent",
     instruction="""
@@ -101,7 +96,7 @@ You are a math agent.
 )
 
 
-assistant_v1 = Agent(
+assistant_v1 = agent(
     id="assistant_v1",
     display_name="Super Helpful Assistant",
     instruction="""
@@ -186,7 +181,7 @@ async def trace_opentelemetry():
 @asynccontextmanager
 async def configure_logging():
     logging.basicConfig(level=logging.WARNING)
-    logger.setLevel(logging.DEBUG)
+    logging.getLogger("opfer").setLevel(logging.INFO)
     yield
 
 

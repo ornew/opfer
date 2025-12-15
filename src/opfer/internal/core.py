@@ -1,12 +1,14 @@
 # from __future__ import annotations
 
 import asyncio
+import io
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Sequence, TypedDict
+from typing import Awaitable, Callable, Sequence
 
+from PIL import Image
 from pydantic import ValidationError
 
-from opfer import attributes
 from opfer.errors import (
     MaxStepsExceeded,
     ModelBehaviorError,
@@ -14,38 +16,283 @@ from opfer.errors import (
     ModelRefusalError,
     ToolError,
 )
-from opfer.inspect import FuncSchema, get_func_schema
-from opfer.provider import get_model_provider_registry
-from opfer.tracing import tracer
+from opfer.internal import attributes
+from opfer.internal.inspect import FuncSchema, get_func_schema
+from opfer.internal.tracing import tracer
 from opfer.types import (
+    Agent,
     AgentOutput,
     AgentResponse,
     AgentTurnResult,
+    ArtifactStorage,
+    Blob,
+    BlobStorage,
     Content,
     ContentLike,
     ContentListAdapter,
     ContentListLike,
+    File,
     JsonValue,
     ModalityTokenCountList,
     ModelConfig,
+    ModelProvider,
+    ModelProviderRegistry,
     Part,
+    PartBlob,
     PartFunctionCall,
     PartFunctionResponse,
+    PartFunctionResponsePartBlob,
+    PartLike,
+    PartText,
+    PartThought,
     Role,
-    as_content_list,
-    as_instruction_content,
+    Tool,
+    ToolLike,
+    ToolResult,
+)
+
+_context_artifact_repository = ContextVar[ArtifactStorage]("artifact_storage")
+_context_blob_resolver = ContextVar[BlobStorage]("blob_storage")
+_context_model_provider_registry = ContextVar[ModelProviderRegistry](
+    "model_provider_registry"
 )
 
 
-class ToolOutput(TypedDict):
-    output: JsonValue
+def get_artifact_storage() -> ArtifactStorage:
+    return _context_artifact_repository.get()
 
 
-class ToolOutputError(TypedDict):
-    error: JsonValue
+def set_artifact_storage(repo: ArtifactStorage) -> Token[ArtifactStorage]:
+    return _context_artifact_repository.set(repo)
 
 
-type ToolResult = ToolOutput | ToolOutputError
+def reset_artifact_storage(token: Token[ArtifactStorage]) -> None:
+    _context_artifact_repository.reset(token)
+
+
+def get_blob_storage() -> BlobStorage:
+    return _context_blob_resolver.get()
+
+
+def set_blob_storage(resolver: BlobStorage) -> Token[BlobStorage]:
+    return _context_blob_resolver.set(resolver)
+
+
+def reset_blob_storage(token: Token[BlobStorage]) -> None:
+    _context_blob_resolver.reset(token)
+
+
+async def upload_artifact(file: File) -> str:
+    return await get_artifact_storage().upload(file)
+
+
+async def download_artifact(url: str) -> File:
+    return await get_artifact_storage().download(url)
+
+
+async def upload_blob(blob: Blob) -> str:
+    return await get_blob_storage().upload(blob)
+
+
+async def download_blob(url: str) -> Blob:
+    return await get_blob_storage().download(url)
+
+
+def get_model_provider_registry() -> ModelProviderRegistry:
+    return _context_model_provider_registry.get()
+
+
+def set_model_provider_registry(
+    registry: ModelProviderRegistry,
+) -> Token[ModelProviderRegistry]:
+    return _context_model_provider_registry.set(registry)
+
+
+def reset_model_provider_registry(
+    token: Token[ModelProviderRegistry],
+) -> None:
+    _context_model_provider_registry.reset(token)
+
+
+class DefaultModelProviderRegistry:
+    _providers: dict[str, ModelProvider]
+
+    def __init__(self):
+        self._providers = {}
+
+    def register(self, provider: ModelProvider) -> None:
+        if provider.name in self._providers:
+            raise ValueError(f"ModelProvider '{provider.name}' already registered")
+        self._providers[provider.name] = provider
+
+    def get(self, name: str) -> ModelProvider:
+        if name not in self._providers:
+            raise ValueError(f"ModelProvider '{name}' not registered")
+        return self._providers[name]
+
+
+async def download_part_blob(blob: PartBlob | PartFunctionResponsePartBlob) -> Blob:
+    downloaded = await download_blob(blob.url)
+    assert (
+        downloaded.mime_type == blob.mime_type
+    ), f"downloaded mime type {downloaded.mime_type} does not match, expected {blob.mime_type}"
+    assert (
+        downloaded.content_md5 == blob.content_md5.encode()
+    ), f"downloaded content_md5 {downloaded.content_md5} does not match, expected {blob.content_md5}"
+    return downloaded
+
+
+async def image_as_part(image: Image.Image, format: str = "webp") -> Part:
+    buf = io.BytesIO()
+    image.save(buf, format=format)
+    data = buf.getvalue()
+    blob = Blob(
+        mime_type=f"image/{format.lower()}",
+        data=data,
+    )
+    resolver = get_blob_storage()
+    url = await resolver.upload(blob)
+    return Part(
+        blob=PartBlob(
+            mime_type=blob.mime_type,
+            url=url,
+            content_md5=blob.content_md5.decode(),
+        )
+    )
+
+
+async def as_instruction_part(part: PartLike) -> Part:
+    match part:
+        case str():
+            return Part(text=PartText(text=part))
+        case Image.Image():
+            return await image_as_part(part)
+        case Part():
+            match part.type:
+                case PartText():
+                    return part
+                case PartBlob():
+                    raise ValueError("instruction part does not support image.")
+                case PartFunctionResponse():
+                    raise ValueError(
+                        "instruction part does not support function response."
+                    )
+                case PartThought() | PartFunctionCall():
+                    raise ValueError("instruction part does not support model part.")
+
+
+async def as_instruction_content(content: ContentLike) -> Content:
+    match content:
+        case Content():
+            if content.role is None or content.role != Role.USER:
+                raise ValueError("content is none or not a user content.")
+            return content
+        case str() | Image.Image() | Part():
+            return Content(role=Role.USER, parts=[await as_instruction_part(content)])
+        case list():
+            parts = [await as_instruction_part(p) for p in content]
+            return Content(role=Role.USER, parts=parts)
+
+
+async def as_part(part: PartLike) -> Part:
+    match part:
+        case str():
+            return Part(text=PartText(text=part))
+        case Image.Image():
+            return await image_as_part(part)
+        case Part():
+            return part
+
+
+async def _pop_front_content(
+    contents: list[PartLike] | list[ContentLike],
+) -> tuple[Content | None, list[ContentLike]]:
+    if not contents:
+        return None, []
+    first, *rest = contents
+    match first:
+        case str() | Image.Image():
+            role = Role.USER
+        case Part():
+            match first.type:
+                case PartText() | PartBlob() | PartFunctionResponse():
+                    role = Role.USER
+                case PartThought() | PartFunctionCall():
+                    role = Role.MODEL
+        case Content():
+            return first, rest
+        case list():
+            # part list
+            first_part, *_ = first
+            match first_part:
+                case str() | Image.Image():
+                    role = Role.USER
+                case Part():
+                    match first_part.type:
+                        case PartText() | PartBlob() | PartFunctionResponse():
+                            role = Role.USER
+                        case PartThought() | PartFunctionCall():
+                            role = Role.MODEL
+            return Content(role=role, parts=[await as_part(p) for p in first]), rest
+    # collect same role parts
+    same_role_parts = [first]
+    for content in rest:
+        match content:
+            case str():
+                if role == Role.USER:
+                    same_role_parts.append(content)
+                else:
+                    break
+            case Part():
+                match content.type:
+                    case PartText() | PartBlob() | PartFunctionResponse():
+                        if role == Role.USER:
+                            same_role_parts.append(content)
+                        else:
+                            break
+                    case PartThought() | PartFunctionCall():
+                        if role == Role.MODEL:
+                            same_role_parts.append(content)
+                        else:
+                            break
+            case Content() | list():
+                break
+    remaining_contents = rest[len(same_role_parts) - 1 :]
+    return (
+        Content(
+            role=role,
+            parts=[await as_part(p) for p in same_role_parts],
+        ),
+        remaining_contents,
+    )
+
+
+async def as_content_list(contents: ContentListLike) -> list[Content]:
+    match contents:
+        case str():
+            return [Content(role=Role.USER, parts=[Part(text=PartText(text=contents))])]
+        case Image.Image():
+            part = await image_as_part(contents)
+            return [Content(role=Role.USER, parts=[part])]
+        case Part():
+            match contents.type:
+                case PartText() | PartBlob() | PartFunctionResponse():
+                    return [Content(role=Role.USER, parts=[contents])]
+                case PartThought() | PartFunctionCall():
+                    return [Content(role=Role.MODEL, parts=[contents])]
+        case Content():
+            return [contents]
+        case list():
+            result: list[Content] = []
+            remaining_contents: list[PartLike] | list[ContentLike] = contents
+            while remaining_contents:
+                content, remaining_contents = await _pop_front_content(
+                    remaining_contents,
+                )
+                if content is None:
+                    break
+                result.append(content)
+            return result
 
 
 def _func_schema_as_tool_definition(schema: FuncSchema) -> JsonValue:
@@ -54,9 +301,9 @@ def _func_schema_as_tool_definition(schema: FuncSchema) -> JsonValue:
 
 
 @dataclass
-class Tool[**I, O]:
+class _Tool[**I, O](Tool[I]):
     _func: Callable[I, Awaitable[O]]
-    schema: FuncSchema
+    _schema: FuncSchema
 
     def __init__(
         self,
@@ -65,22 +312,26 @@ class Tool[**I, O]:
         description: str | None = None,
     ):
         self._func = func
-        self.schema = get_func_schema(
+        self._schema = get_func_schema(
             func,
             name=name,
             description=description,
             # allow_positional_args=False,
         )
 
+    @property
+    def schema(self) -> FuncSchema:
+        return self._schema
+
     async def call(self, call_id: str, *args: I.args, **kwargs: I.kwargs) -> ToolResult:
         with tracer.span(
-            f"call tool {self.schema.name}",
+            f"call tool {self._schema.name}",
             attributes={
                 attributes.OPERATION_NAME: "tool_call",
-                attributes.TOOL_NAME: self.schema.name,
-                attributes.TOOL_DESCRIPTION: self.schema.description or "",
+                attributes.TOOL_NAME: self._schema.name,
+                attributes.TOOL_DESCRIPTION: self._schema.description or "",
                 attributes.TOOL_DEFINITION: _func_schema_as_tool_definition(
-                    self.schema
+                    self._schema
                 ),
                 attributes.TOOL_CALL_ID: call_id,
             },
@@ -90,12 +341,12 @@ class Tool[**I, O]:
                     **{
                         k: v
                         for k, v in zip(
-                            self.schema.input_model.model_fields.keys(), args
+                            self._schema.input_model.model_fields.keys(), args
                         )
                     },
                     **kwargs,
                 }
-                input = self.schema.input_model.model_validate(_args)
+                input = self._schema.input_model.model_validate(_args)
                 s.set_attribute(
                     attributes.TOOL_CALL_INPUT,
                     input.model_dump(),
@@ -105,7 +356,7 @@ class Tool[**I, O]:
                 return {"error": "Invalid input: " + repr(e)}
             try:
                 output = await self._func(*args, **kwargs)
-                output_json = self.schema.output_type.dump_python(output)
+                output_json = self._schema.output_type.dump_python(output)
                 s.set_attribute(
                     attributes.TOOL_CALL_OUTPUT,
                     output_json,
@@ -117,39 +368,36 @@ class Tool[**I, O]:
 
 
 def tool(name: str | None = None, description: str | None = None):
-    def decorator[**I, O](func: Callable[I, Awaitable[O]]) -> Tool[I, O]:
-        return Tool[I, O](func, name=name, description=description)
+    def decorator[**I, O](func: Callable[I, Awaitable[O]]) -> _Tool[I, O]:
+        return _Tool[I, O](func, name=name, description=description)
 
     return decorator
 
 
-type ToolLike = Tool | Callable[..., Awaitable[Any]]
-
 _tool_cache_attr = "_opfer_tool_cache"
 
 
-def as_tool(fn: ToolLike) -> Tool:
+def _as_tool(fn: ToolLike) -> Tool:
     if isinstance(fn, Tool):
         return fn
     cache = getattr(fn, _tool_cache_attr, None)
     if cache is not None:
-        if not isinstance(cache, Tool):
+        if not isinstance(cache, _Tool):
             raise ValueError(f"invalid tool cache type: {type(cache)} of {fn}")
         return cache
-    tool_instance = Tool(fn)
+    tool_instance = _Tool(fn)
     setattr(fn, _tool_cache_attr, tool_instance)
     return tool_instance
 
 
-class Agent[TOutput = str]:
-    id: str
-    display_name: str
-    description: str | None
-    instruction: ContentLike
-    model: ModelConfig
-    output_type: type[TOutput] | None
-
-    tools: list[Tool]
+class _Agent[T]:
+    _id: str
+    _display_name: str
+    _description: str | None
+    _instruction: ContentLike
+    _model: ModelConfig
+    _output_type: type[T] | None
+    _tools: list[Tool]
 
     def __init__(
         self,
@@ -159,29 +407,57 @@ class Agent[TOutput = str]:
         model: ModelConfig,
         instruction: ContentLike,
         description: str | None = None,
-        output_type: type[TOutput] | None = None,
+        output_type: type[T] | None = None,
         tools: Sequence[ToolLike] | None = None,
     ):
-        self.id = id
-        self.display_name = display_name
-        self.description = description
-        self.instruction = instruction
-        self.model = model
-        self.output_type = output_type
-        self.tools = [as_tool(t) for t in tools or []]
+        self._id = id
+        self._display_name = display_name
+        self._description = description
+        self._instruction = instruction
+        self._model = model
+        self._output_type = output_type
+        self._tools = [_as_tool(t) for t in tools or []]
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def display_name(self) -> str:
+        return self._display_name
+
+    @property
+    def description(self) -> str | None:
+        return self._description
+
+    @property
+    def instruction(self) -> ContentLike:
+        return self._instruction
+
+    @property
+    def model(self) -> ModelConfig:
+        return self._model
+
+    @property
+    def output_type(self) -> type[T] | None:
+        return self._output_type
+
+    @property
+    def tools(self) -> Sequence[Tool]:
+        return self._tools
 
     async def run(
         self,
         input: ContentListLike,
         max_turns: int | None = None,
-    ) -> AgentOutput[TOutput]:
+    ) -> AgentOutput[T]:
         with tracer.span(
-            f"agent run: {self.id}",
+            f"agent run: {self._id}",
             attributes={
                 attributes.OPERATION_NAME: "agent_run",
-                attributes.AI_AGENT_ID: self.id,
-                attributes.AI_AGENT_NAME: self.display_name,
-                attributes.AI_AGENT_DESCRIPTION: self.description,
+                attributes.AI_AGENT_ID: self._id,
+                attributes.AI_AGENT_NAME: self._display_name,
+                attributes.AI_AGENT_DESCRIPTION: self._description,
                 attributes.AI_AGENT_RUN_MAX_TURNS: max_turns,
             },
         ):
@@ -195,11 +471,11 @@ class Agent[TOutput = str]:
         self,
         description: str,
         name: str | None = None,
-    ) -> Tool:
-        return agent_as_tool(self, name, description)
+    ) -> Tool[[str]]:
+        return _agent_as_tool(self, name, description)
 
     def find_tool_by_name(self, name: str) -> Tool | None:
-        for tool in self.tools:
+        for tool in self._tools:
             if tool.schema.name == name:
                 return tool
 
@@ -231,11 +507,32 @@ class Agent[TOutput = str]:
         return responses
 
 
-def agent_as_tool[T](
+def agent[T = str](
+    *,
+    id: str,
+    display_name: str,
+    model: ModelConfig,
+    instruction: ContentLike,
+    description: str | None = None,
+    output_type: type[T] | None = None,
+    tools: Sequence[ToolLike] | None = None,
+) -> Agent[T]:
+    return _Agent[T](
+        id=id,
+        display_name=display_name,
+        model=model,
+        instruction=instruction,
+        description=description,
+        output_type=output_type,
+        tools=tools,
+    )
+
+
+def _agent_as_tool[T](
     agent: Agent[T],
     name: str | None = None,
     description: str | None = None,
-) -> Tool[[str], T]:
+) -> _Tool[[str], T]:
     async def tool_func(input: str) -> T:
         output = await agent.run(input)
 
@@ -248,8 +545,8 @@ def agent_as_tool[T](
     )(tool_func)
 
 
-async def _run_agent_turn[TOutput](
-    agent: Agent[TOutput],
+async def _run_agent_turn[T](
+    agent: Agent[T],
     input: list[Content],
     instruction: Content | None,
     max_steps: int | None = None,
@@ -397,11 +694,11 @@ async def _run_agent_turn[TOutput](
     )
 
 
-async def _run_agent[TOutput](
-    agent: Agent[TOutput],
+async def _run_agent[T](
+    agent: Agent[T],
     input: ContentListLike,
     max_turns: int | None = None,
-) -> AgentOutput[TOutput]:
+) -> AgentOutput[T]:
     turn = 0
     responses: list[AgentTurnResult] = []
 

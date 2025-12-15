@@ -25,7 +25,7 @@ pip install opfer
 
 For Google GenAI support:
 ```bash
-pip install opfer[google_genai]
+pip install opfer[google-genai]
 ```
 
 For OpenTelemetry tracing:
@@ -38,7 +38,7 @@ pip install opfer[opentelemetry]
 ### Basic Agent
 
 ```python
-from opfer.core import Agent
+from opfer import agent
 from opfer.types import ModelConfig
 
 async def add(a: float, b: float) -> float:
@@ -47,7 +47,7 @@ async def add(a: float, b: float) -> float:
 async def multiply(a: float, b: float) -> float:
     return a * b
 
-math_agent = Agent(
+math_agent = agent(
     id="math_agent",
     display_name="Math Agent",
     instruction="You are a math agent.",
@@ -64,7 +64,7 @@ math_agent = Agent(
 Agents can use other agents as tools:
 
 ```python
-assistant = Agent(
+assistant = agent(
     id="assistant",
     display_name="Super Helpful Assistant",
     instruction="You are a helpful assistant.",
@@ -111,7 +111,8 @@ import io
 
 from PIL import Image
 
-from opfer.artifacts import File, upload_artifact, download_artifact
+from opfer import upload_artifact, download_artifact
+from opfer.types import File
 
 async def process_image():
     # Load image
@@ -139,9 +140,7 @@ Set up storage backends and model providers:
 ```python
 from contextlib import asynccontextmanager
 
-from opfer.provider import DefaultModelProviderRegistry, set_model_provider_registry
-from opfer.artifacts import set_artifact_storage
-from opfer.blob import set_blob_storage
+from opfer import DefaultModelProviderRegistry, set_model_provider_registry, set_artifact_storage, set_blob_storage
 
 set_model_provider_registry(DefaultModelProviderRegistry())
 set_artifact_storage(InMemoryArtifactStorage())
@@ -159,7 +158,7 @@ from opfer.tracing import trace, tracer, get_current_span
 async def monitored_function(a: float, b: float) -> float:
     span = get_current_span()
     if span:
-        span.add_event("Function called", {"a": a, "b": b})
+        span.add_event("function called", {"a": a, "b": b})
     return a * b
 
 # Trace entire workflows
@@ -184,26 +183,3 @@ To run the example:
 ```bash
 python examples/basic/example.py
 ```
-
-## Architecture
-
-### Core Components
-
-- **Agent**: AI agents with custom tools and instructions
-- **Workflow**: Async task orchestration with composable operations
-- **Provider**: Abstraction for AI model providers
-- **Artifacts**: File and data management with pluggable storage
-- **Blob**: Binary data storage with content-addressable URLs
-- **Tracing**: Observability with span-based tracing
-
-### Storage Backends
-
-Opfer provides flexible storage backends for artifacts and blobs:
-
-- In-memory storage (for development/testing)
-- Custom storage implementations (implement the storage interface)
-
-### Model Providers
-
-Currently supported:
-- Google GenAI (via `google-genai` package)

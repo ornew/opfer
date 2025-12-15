@@ -2,9 +2,9 @@ import random
 import time
 from functools import wraps
 
-from opfer import attributes
-from opfer.logging import logger
-from opfer.tracing import tracer
+from opfer.internal import attributes
+from opfer.internal.logging import logger
+from opfer.internal.tracing import tracer
 
 
 def retry(

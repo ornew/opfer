@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from io import BytesIO
+from functools import cache
 from typing import (
     Annotated,
     Any,
+    Awaitable,
+    Callable,
     Mapping,
+    Protocol,
     Sequence,
+    TypedDict,
+    runtime_checkable,
 )
 
 from PIL import Image
 from pydantic import BaseModel, Field, PlainSerializer, TypeAdapter
 
-from opfer.blob import Blob, download_blob, get_blob_storage
+from opfer.internal.inspect import FuncSchema
 
 type JsonValue = (
     None | str | bool | int | float | Sequence[JsonValue] | Mapping[str, JsonValue]
@@ -22,6 +30,32 @@ type JsonValue = (
 type JsonComparableValue = None | str | int | float
 
 type JsonSchema = Mapping[str, JsonValue] | bool
+
+
+@dataclass(frozen=True)
+class Blob:
+    mime_type: str
+    data: bytes
+
+    @property
+    @cache
+    def content_md5(self):
+        """RFC1864: base64-encoded MD5 digests"""
+        return base64.b64encode(hashlib.md5(self.data).digest())
+
+
+@dataclass
+class File:
+    name: str
+    mime_type: str
+    data: bytes
+    metadata: dict[str, str] | None = field(default=None)
+
+    @property
+    @cache
+    def content_md5(self):
+        """RFC1864: base64-encoded MD5 digests"""
+        return base64.b64encode(hashlib.md5(self.data).digest())
 
 
 class DataClass(BaseModel):
@@ -53,36 +87,6 @@ class PartBlob(DataClass):
     mime_type: str
     url: str
     content_md5: str
-
-
-async def new_part_image(image: Image.Image, format: str = "webp") -> Part:
-    buf = BytesIO()
-    image.save(buf, format=format)
-    data = buf.getvalue()
-    blob = Blob(
-        mime_type=f"image/{format.lower()}",
-        data=data,
-    )
-    resolver = get_blob_storage()
-    url = await resolver.upload(blob)
-    return Part(
-        blob=PartBlob(
-            mime_type=blob.mime_type,
-            url=url,
-            content_md5=blob.content_md5.decode(),
-        )
-    )
-
-
-async def download_part_blob(blob: PartBlob | PartFunctionResponsePartBlob) -> Blob:
-    downloaded = await download_blob(blob.url)
-    assert (
-        downloaded.mime_type == blob.mime_type
-    ), f"downloaded mime type {downloaded.mime_type} does not match, expected {blob.mime_type}"
-    assert (
-        downloaded.content_md5 == blob.content_md5.encode()
-    ), f"downloaded content_md5 {downloaded.content_md5} does not match, expected {blob.content_md5}"
-    return downloaded
 
 
 class PartFunctionCall(DataClass):
@@ -166,140 +170,6 @@ type ContentListLike = ContentLike | list[ContentLike]
 ContentListAdapter = TypeAdapter(list[Content])
 
 
-async def as_instruction_part(part: PartLike) -> Part:
-    match part:
-        case str():
-            return Part(text=PartText(text=part))
-        case Image.Image():
-            return await new_part_image(part)
-        case Part():
-            match part.type:
-                case PartText():
-                    return part
-                case PartBlob():
-                    raise ValueError("instruction part does not support image.")
-                case PartFunctionResponse():
-                    raise ValueError(
-                        "instruction part does not support function response."
-                    )
-                case PartThought() | PartFunctionCall():
-                    raise ValueError("instruction part does not support model part.")
-
-
-async def as_instruction_content(content: ContentLike) -> Content:
-    match content:
-        case Content():
-            if content.role is None or content.role != Role.USER:
-                raise ValueError("content is none or not a user content.")
-            return content
-        case str() | Image.Image() | Part():
-            return Content(role=Role.USER, parts=[await as_instruction_part(content)])
-        case list():
-            parts = [await as_instruction_part(p) for p in content]
-            return Content(role=Role.USER, parts=parts)
-
-
-async def as_part(part: PartLike) -> Part:
-    match part:
-        case str():
-            return Part(text=PartText(text=part))
-        case Image.Image():
-            return await new_part_image(part)
-        case Part():
-            return part
-
-
-async def _pop_front_content(
-    contents: list[PartLike] | list[ContentLike],
-) -> tuple[Content | None, list[ContentLike]]:
-    if not contents:
-        return None, []
-    first, *rest = contents
-    match first:
-        case str() | Image.Image():
-            role = Role.USER
-        case Part():
-            match first.type:
-                case PartText() | PartBlob() | PartFunctionResponse():
-                    role = Role.USER
-                case PartThought() | PartFunctionCall():
-                    role = Role.MODEL
-        case Content():
-            return first, rest
-        case list():
-            # part list
-            first_part, *_ = first
-            match first_part:
-                case str() | Image.Image():
-                    role = Role.USER
-                case Part():
-                    match first_part.type:
-                        case PartText() | PartBlob() | PartFunctionResponse():
-                            role = Role.USER
-                        case PartThought() | PartFunctionCall():
-                            role = Role.MODEL
-            return Content(role=role, parts=[await as_part(p) for p in first]), rest
-    # collect same role parts
-    same_role_parts = [first]
-    for content in rest:
-        match content:
-            case str():
-                if role == Role.USER:
-                    same_role_parts.append(content)
-                else:
-                    break
-            case Part():
-                match content.type:
-                    case PartText() | PartBlob() | PartFunctionResponse():
-                        if role == Role.USER:
-                            same_role_parts.append(content)
-                        else:
-                            break
-                    case PartThought() | PartFunctionCall():
-                        if role == Role.MODEL:
-                            same_role_parts.append(content)
-                        else:
-                            break
-            case Content() | list():
-                break
-    remaining_contents = rest[len(same_role_parts) - 1 :]
-    return (
-        Content(
-            role=role,
-            parts=[await as_part(p) for p in same_role_parts],
-        ),
-        remaining_contents,
-    )
-
-
-async def as_content_list(contents: ContentListLike) -> list[Content]:
-    match contents:
-        case str():
-            return [Content(role=Role.USER, parts=[Part(text=PartText(text=contents))])]
-        case Image.Image():
-            part = await new_part_image(contents)
-            return [Content(role=Role.USER, parts=[part])]
-        case Part():
-            match contents.type:
-                case PartText() | PartBlob() | PartFunctionResponse():
-                    return [Content(role=Role.USER, parts=[contents])]
-                case PartThought() | PartFunctionCall():
-                    return [Content(role=Role.MODEL, parts=[contents])]
-        case Content():
-            return [contents]
-        case list():
-            result: list[Content] = []
-            remaining_contents: list[PartLike] | list[ContentLike] = contents
-            while remaining_contents:
-                content, remaining_contents = await _pop_front_content(
-                    remaining_contents,
-                )
-                if content is None:
-                    break
-                result.append(content)
-            return result
-
-
 class ModelConfig(DataClass):
     provider: str
     name: str
@@ -354,24 +224,24 @@ class AgentResponseMetadata(DataClass):
     usage: Usage
 
 
-class AgentResponse[TOutput](DataClass):
+class AgentResponse[T](DataClass):
     metadata: AgentResponseMetadata
     instruction: Content | None
     input: list[Content]
     output: list[Content]
     finish_reason: str
-    parsed: TOutput | None = Field(default=None)
+    parsed: T | None = Field(default=None)
 
 
 class AgentTurnResult(DataClass):
     steps: list[AgentResponse]
 
 
-class AgentOutput[TOutput](DataClass):
+class AgentOutput[T](DataClass):
     turns: list[AgentTurnResult]
 
     @property
-    def final_output(self) -> TOutput:
+    def final_output(self) -> T:
         if not self.turns:
             raise ValueError("no turns available in agent output.")
         final_turn = self.turns[-1]
@@ -394,3 +264,106 @@ class AgentOutput[TOutput](DataClass):
         for content in final_step.output:
             texts.append(content.text)
         return "\n".join(texts)
+
+
+class ToolOutput(TypedDict):
+    output: JsonValue
+
+
+class ToolOutputError(TypedDict):
+    error: JsonValue
+
+
+type ToolResult = ToolOutput | ToolOutputError
+
+
+@runtime_checkable
+class Tool[**I](Protocol):
+    @property
+    def schema(self) -> FuncSchema: ...
+
+    async def call(
+        self,
+        call_id: str,
+        *args: I.args,
+        **kwargs: I.kwargs,
+    ) -> ToolResult: ...
+
+
+type ToolLike = Tool | Callable[..., Awaitable[Any]]
+
+
+class Agent[T](Protocol):
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def display_name(self) -> str: ...
+
+    @property
+    def description(self) -> str | None: ...
+
+    @property
+    def instruction(self) -> ContentLike: ...
+
+    @property
+    def model(self) -> ModelConfig: ...
+
+    @property
+    def output_type(self) -> type[T] | None: ...
+
+    @property
+    def tools(self) -> Sequence[Tool]: ...
+
+    async def run(
+        self,
+        input: ContentListLike,
+        max_turns: int | None = None,
+    ) -> AgentOutput[T]: ...
+
+    async def invoke_tools(
+        self, calls: list[PartFunctionCall]
+    ) -> list[PartFunctionResponse]: ...
+
+    def as_tool(
+        self,
+        description: str,
+        name: str | None = None,
+    ) -> Tool[[str]]: ...
+
+
+class Chat(Protocol):
+    async def send[T](
+        self,
+        agent: Agent[T],
+        input: list[Content],
+        instruction: Content | None = None,
+    ) -> AgentResponse: ...
+
+    @property
+    def history(self) -> list[Content]: ...
+
+
+class ModelProvider(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    async def chat(self) -> Chat: ...
+
+
+class ModelProviderRegistry(Protocol):
+    def register(self, provider: ModelProvider) -> None: ...
+
+    def get(self, name: str) -> ModelProvider: ...
+
+
+class ArtifactStorage(Protocol):
+    async def exists(self, url: str) -> bool: ...
+    async def download(self, url: str) -> File: ...
+    async def upload(self, file: File) -> str: ...
+
+
+class BlobStorage(Protocol):
+    async def exists(self, url: str) -> bool: ...
+    async def download(self, url: str) -> Blob: ...
+    async def upload(self, blob: Blob) -> str: ...

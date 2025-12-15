@@ -6,7 +6,7 @@ import opentelemetry.sdk.trace
 import opentelemetry.sdk.trace.export
 import opentelemetry.trace
 
-from opfer.tracing import (
+from opfer.internal.tracing import (
     Attributes,
     ReadableSpan,
     SpanContext,

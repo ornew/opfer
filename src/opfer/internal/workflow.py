@@ -90,14 +90,6 @@ class Workflow:
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:
         await self._task_group.__aexit__(exc_type, exc_value, traceback)
 
-    def gather[O](self, a1: Sequence[Awaitable[O]]) -> Task[list[O]]:
-        async def wrapper() -> list[O]:
-            return await asyncio.gather(*a1)
-
-        task = Task(self, self._task_group.create_task(wrapper()))
-        self._reminds.append(task)
-        return task
-
     def run[T1](
         self,
         a1: Coroutine[Any, Any, T1],
@@ -115,6 +107,23 @@ class Workflow:
         name: str | None = None,
     ) -> TaskTuple[*T]:
         task = TaskTuple(self, self._task_group.create_task(a1, name=name))
+        self._reminds.append(task)
+        return task
+
+    def const[T](self, item: T) -> Task[T]:
+        async def wrapper() -> T:
+            return item
+
+        return self.run(wrapper())
+
+    async def scatter[T](self, task: Task[list[T]]) -> list[Task[T]]:
+        return await task.then_sync(lambda lst: [self.const(item) for item in lst])
+
+    def gather[O](self, a1: Sequence[Awaitable[O]]) -> Task[list[O]]:
+        async def wrapper() -> list[O]:
+            return await asyncio.gather(*a1)
+
+        task = Task(self, self._task_group.create_task(wrapper()))
         self._reminds.append(task)
         return task
 
