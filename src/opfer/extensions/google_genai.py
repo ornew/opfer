@@ -5,7 +5,7 @@ import google.genai
 import google.genai.client
 import google.genai.errors
 import google.genai.types
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from opfer.errors import (
     ModelBehaviorError,
@@ -246,11 +246,9 @@ class GoogleAgentProviderChat(Chat):
         mime_type = None
         json_schema = None
         if agent.output_type is not None:
-            if isinstance(agent.output_type, BaseModel):
-                mime_type = "application/json"
-                json_schema = agent.output_type.model_json_schema()
-            else:
-                raise UserError("invalid agent output type")
+            mime_type = "application/json"
+            adapter = TypeAdapter(agent.output_type)
+            json_schema = adapter.json_schema()
 
         tools: list[google.genai.types.Tool] = []
         if agent.tools:
