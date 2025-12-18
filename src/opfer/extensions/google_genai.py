@@ -159,7 +159,7 @@ class GoogleAgentProviderChat(Chat):
             )
             raise ModelRefusalError(
                 reason=block_reason.name,
-                message=f"prompt blocked: {prompt_feedback.block_reason_message or "no message"}, safety_ratings={prompt_feedback.safety_ratings}",
+                message=f"prompt blocked: {prompt_feedback.block_reason_message or 'no message'}, safety_ratings={prompt_feedback.safety_ratings}",
             )
 
         if raw_response.candidates is None or len(raw_response.candidates) == 0:
@@ -187,7 +187,7 @@ class GoogleAgentProviderChat(Chat):
             case _:
                 raise ModelRefusalError(
                     reason=finish_reason.name,
-                    message=f"{finish_message or "no message"}",
+                    message=f"{finish_message or 'no message'}",
                 )
 
         if candidate.content is None:
@@ -462,7 +462,7 @@ class GoogleAgentProviderChat(Chat):
                     mime_type=d.mime_type,
                     data=d.data or b"",
                 )
-                blob_url = await upload_blob(blob)
+                blob_uri = await upload_blob(blob)
                 return Part(
                     thought_signature=part.thought_signature,
                     media_resolution=MediaResolution(
@@ -478,7 +478,7 @@ class GoogleAgentProviderChat(Chat):
                     else None,
                     blob=PartBlob(
                         mime_type=d.mime_type,
-                        url=blob_url,
+                        uri=blob_uri,
                         content_md5=blob.content_md5.decode(),
                     ),
                 )
@@ -503,10 +503,10 @@ class GoogleAgentProviderChat(Chat):
                     mime_type=blob.mime_type,
                     data=blob.data or b"",
                 )
-                blob_url = await upload_blob(resolved_blob)
+                blob_uri = await upload_blob(resolved_blob)
                 return PartFunctionResponsePartBlob(
                     mime_type=blob.mime_type,
-                    url=blob_url,
+                    uri=blob_uri,
                     content_md5=resolved_blob.content_md5.decode(),
                 )
 
@@ -533,7 +533,9 @@ class GoogleAgentProviderChat(Chat):
         self, mr: google.genai.types.PartMediaResolutionLevel
     ) -> MediaResolutionLevel:
         match mr:
-            case google.genai.types.PartMediaResolutionLevel.MEDIA_RESOLUTION_UNSPECIFIED:
+            case (
+                google.genai.types.PartMediaResolutionLevel.MEDIA_RESOLUTION_UNSPECIFIED
+            ):
                 return MediaResolutionLevel.UNSPECIFIED
             case google.genai.types.PartMediaResolutionLevel.MEDIA_RESOLUTION_LOW:
                 return MediaResolutionLevel.LOW

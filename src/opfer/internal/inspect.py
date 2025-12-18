@@ -55,7 +55,6 @@ def get_func_schema[**I, O](
 
     fields: dict[str, Any] = {}
     params = list(sig.parameters.items())
-    takes_context = False
 
     for i, (name, param) in enumerate(params):
         if not allow_positional_args:
@@ -73,7 +72,6 @@ def get_func_schema[**I, O](
         ann = type_hints.get(name, param.annotation)
         if ann is inspect.Signature.empty:
             raise ValueError(f"no type annotation found for parameter '{name}'")
-        origin = get_origin(ann)
         default = param.default
         field_description = param_descs.get(name)
         match param.kind:
@@ -350,9 +348,9 @@ def _resolve_ref(*, root: dict[str, object], ref: str) -> object:
     resolved = root
     for key in path:
         value = resolved[key]
-        assert _is_dict(
-            value
-        ), f"encountered non-dictionary entry while resolving {ref} - {resolved}"
+        assert _is_dict(value), (
+            f"encountered non-dictionary entry while resolving {ref} - {resolved}"
+        )
         resolved = value
 
     return resolved

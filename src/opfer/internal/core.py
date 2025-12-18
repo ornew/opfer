@@ -2,9 +2,10 @@
 
 import asyncio
 import io
+from collections.abc import Awaitable, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Sequence
+from typing import Callable
 
 from PIL import Image
 from pydantic import ValidationError
@@ -86,16 +87,16 @@ async def upload_artifact(file: File) -> str:
     return await get_artifact_storage().upload(file)
 
 
-async def download_artifact(url: str) -> File:
-    return await get_artifact_storage().download(url)
+async def download_artifact(uri: str) -> File:
+    return await get_artifact_storage().download(uri)
 
 
 async def upload_blob(blob: Blob) -> str:
     return await get_blob_storage().upload(blob)
 
 
-async def download_blob(url: str) -> Blob:
-    return await get_blob_storage().download(url)
+async def download_blob(uri: str) -> Blob:
+    return await get_blob_storage().download(uri)
 
 
 def get_model_provider_registry() -> ModelProviderRegistry:
@@ -132,13 +133,13 @@ class DefaultModelProviderRegistry:
 
 
 async def download_part_blob(blob: PartBlob | PartFunctionResponsePartBlob) -> Blob:
-    downloaded = await download_blob(blob.url)
-    assert (
-        downloaded.mime_type == blob.mime_type
-    ), f"downloaded mime type {downloaded.mime_type} does not match, expected {blob.mime_type}"
-    assert (
-        downloaded.content_md5 == blob.content_md5.encode()
-    ), f"downloaded content_md5 {downloaded.content_md5} does not match, expected {blob.content_md5}"
+    downloaded = await download_blob(blob.uri)
+    assert downloaded.mime_type == blob.mime_type, (
+        f"downloaded mime type {downloaded.mime_type} does not match, expected {blob.mime_type}"
+    )
+    assert downloaded.content_md5 == blob.content_md5.encode(), (
+        f"downloaded content_md5 {downloaded.content_md5} does not match, expected {blob.content_md5}"
+    )
     return downloaded
 
 
@@ -151,11 +152,11 @@ async def image_as_part(image: Image.Image, format: str = "webp") -> Part:
         data=data,
     )
     resolver = get_blob_storage()
-    url = await resolver.upload(blob)
+    uri = await resolver.upload(blob)
     return Part(
         blob=PartBlob(
             mime_type=blob.mime_type,
-            url=url,
+            uri=uri,
             content_md5=blob.content_md5.decode(),
         )
     )
@@ -189,7 +190,7 @@ async def as_instruction_content(content: ContentLike) -> Content:
             return content
         case str() | Image.Image() | Part():
             return Content(role=Role.USER, parts=[await as_instruction_part(content)])
-        case list():
+        case Sequence():
             parts = [await as_instruction_part(p) for p in content]
             return Content(role=Role.USER, parts=parts)
 
@@ -205,7 +206,7 @@ async def as_part(part: PartLike) -> Part:
 
 
 async def _pop_front_content(
-    contents: list[PartLike] | list[ContentLike],
+    contents: Sequence[PartLike] | Sequence[ContentLike],
 ) -> tuple[Content | None, list[ContentLike]]:
     if not contents:
         return None, []
@@ -221,7 +222,7 @@ async def _pop_front_content(
                     role = Role.MODEL
         case Content():
             return first, rest
-        case list():
+        case Sequence():
             # part list
             first_part, *_ = first
             match first_part:
@@ -255,7 +256,7 @@ async def _pop_front_content(
                             same_role_parts.append(content)
                         else:
                             break
-            case Content() | list():
+            case Content() | Sequence():
                 break
     remaining_contents = rest[len(same_role_parts) - 1 :]
     return (
@@ -282,9 +283,9 @@ async def as_content_list(contents: ContentListLike) -> list[Content]:
                     return [Content(role=Role.MODEL, parts=[contents])]
         case Content():
             return [contents]
-        case list():
+        case Sequence():
             result: list[Content] = []
-            remaining_contents: list[PartLike] | list[ContentLike] = contents
+            remaining_contents: Sequence[PartLike] | Sequence[ContentLike] = contents
             while remaining_contents:
                 content, remaining_contents = await _pop_front_content(
                     remaining_contents,

@@ -1,3 +1,4 @@
+from . import types
 from .internal.core import (
     DefaultModelProviderRegistry,
     agent,
@@ -6,6 +7,7 @@ from .internal.core import (
     get_artifact_storage,
     get_blob_storage,
     get_model_provider_registry,
+    image_as_part,
     reset_artifact_storage,
     reset_blob_storage,
     reset_model_provider_registry,
@@ -38,10 +40,12 @@ from .internal.tracing import (
 from .internal.workflow import Task, Workflow
 
 __all__ = [
+    "types",
     "agent",
     "tool",
     "Workflow",
     "Task",
+    "image_as_part",
     "download_blob",
     "upload_blob",
     "set_blob_storage",

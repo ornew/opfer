@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from collections.abc import (
+    Awaitable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -9,11 +14,8 @@ from functools import cache
 from typing import (
     Annotated,
     Any,
-    Awaitable,
     Callable,
-    Mapping,
     Protocol,
-    Sequence,
     TypedDict,
     runtime_checkable,
 )
@@ -85,7 +87,7 @@ class PartThought(DataClass):
 
 class PartBlob(DataClass):
     mime_type: str
-    url: str
+    uri: str
     content_md5: str
 
 
@@ -97,7 +99,7 @@ class PartFunctionCall(DataClass):
 
 class PartFunctionResponsePartBlob(DataClass):
     mime_type: str
-    url: str
+    uri: str
     content_md5: str
 
 
@@ -134,9 +136,9 @@ class Part(DataClass):
                 return thought
             case Part(function_call=function_call) if function_call is not None:
                 return function_call
-            case Part(
-                function_response=function_response
-            ) if function_response is not None:
+            case Part(function_response=function_response) if (
+                function_response is not None
+            ):
                 return function_response
         raise ValueError("part has no valid type.")
 
@@ -164,10 +166,10 @@ class Content(DataClass):
 
 
 type PartLike = str | Image.Image | Part
-type ContentLike = Content | PartLike | list[PartLike]
-type ContentListLike = ContentLike | list[ContentLike]
+type ContentLike = Content | PartLike | Sequence[PartLike]
+type ContentListLike = ContentLike | Sequence[ContentLike]
 
-ContentListAdapter = TypeAdapter(list[Content])
+ContentListAdapter = TypeAdapter(Sequence[Content])
 
 
 class ModelConfig(DataClass):
@@ -358,12 +360,12 @@ class ModelProviderRegistry(Protocol):
 
 
 class ArtifactStorage(Protocol):
-    async def exists(self, url: str) -> bool: ...
-    async def download(self, url: str) -> File: ...
+    async def exists(self, uri: str) -> bool: ...
+    async def download(self, uri: str) -> File: ...
     async def upload(self, file: File) -> str: ...
 
 
 class BlobStorage(Protocol):
-    async def exists(self, url: str) -> bool: ...
-    async def download(self, url: str) -> Blob: ...
+    async def exists(self, uri: str) -> bool: ...
+    async def download(self, uri: str) -> Blob: ...
     async def upload(self, blob: Blob) -> str: ...
