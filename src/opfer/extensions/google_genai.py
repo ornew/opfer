@@ -5,14 +5,13 @@ import google.genai
 import google.genai.client
 import google.genai.errors
 import google.genai.types
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 
 from opfer.errors import (
     ModelBehaviorError,
     ModelIncompleteError,
     ModelRefusalError,
     RetryableError,
-    UserError,
 )
 from opfer.internal.core import (
     Agent,
@@ -200,15 +199,11 @@ class GoogleAgentProviderChat(Chat):
 
         parsed: Any = output.text
         if agent.output_type is not None:
-            if isinstance(agent.output_type, BaseModel):
-                try:
-                    parsed = agent.output_type.model_validate_json(output.text)
-                except Exception as e:
-                    raise ModelBehaviorError(
-                        f"failed to parse model output: {e}"
-                    ) from e
-            else:
-                raise UserError("invalid agent output type")
+            adapter = TypeAdapter(agent.output_type)
+            try:
+                parsed = adapter.validate_json(output.text)
+            except Exception as e:
+                raise ModelBehaviorError(f"failed to parse model output: {e}") from e
 
         response = AgentResponse(
             metadata=metadata,
