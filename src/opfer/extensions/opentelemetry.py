@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import ContextManager, Mapping, Sequence
 
 import opentelemetry.sdk.resources
@@ -15,6 +16,8 @@ from opfer.internal.tracing import (
     SpanStatusValue,
 )
 from opfer.types import JsonValue
+
+logger = logging.getLogger("opfer.extensions.opentelemetry")
 
 
 def _as_otel_attribute_value(
@@ -81,7 +84,7 @@ class OtelSpanProcessor:
         span: ReadableSpan,
         parent_context: SpanContext | None = None,
     ) -> None:
-        print(f"Starting span: {span.name}")
+        logger.info(f"Starting span: {span.name}")
         otel_span = self.tracer.start_span(
             name=span.name,
             start_time=int(span.start_time.timestamp() * 1_000_000_000),
@@ -100,7 +103,7 @@ class OtelSpanProcessor:
         span.context.extras["otel_ctx"] = ctx
 
     def on_end(self, span: ReadableSpan) -> None:
-        print(f"Ending span: {span.name}")
+        logger.info(f"Ending span: {span.name}")
         otel_span: opentelemetry.trace.Span = span.context.extras["otel_span"]
         otel_span.set_attributes(_as_otel_attributes(span.attributes))
         for link in span.links:
