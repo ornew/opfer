@@ -21,7 +21,7 @@ from typing import (
 )
 
 from PIL import Image
-from pydantic import BaseModel, Field, PlainSerializer, TypeAdapter
+from pydantic import Base64Bytes, BaseModel, Field, PlainSerializer, TypeAdapter
 
 from opfer.internal.inspect import FuncSchema
 
@@ -115,7 +115,7 @@ class PartFunctionResponse(DataClass):
 
 
 class Part(DataClass):
-    thought_signature: bytes | None = Field(default=None)
+    thought_signature: Base64Bytes | None = Field(default=None)
     media_resolution: MediaResolution | None = Field(default=None)
     text: PartText | None = Field(default=None)
     thought: PartThought | None = Field(default=None)
