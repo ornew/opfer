@@ -1,0 +1,7 @@
+OPFER_TRACE = "opfer.trace"
+OPFER_AGENT_RUN = "opfer.agent.run"
+OPFER_AGENT_TURN = "opfer.agent.turn"
+OPFER_AGENT_STEP = "opfer.agent.step"
+OPFER_AGENT_CHAT = "opfer.agent.chat"
+OPFER_RETRYABLE_CALL = "opfer.retryable_call"
+OPFER_RETRYABLE_CALL_ATTEMPT = "opfer.retryable_call.attempt"

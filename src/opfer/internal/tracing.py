@@ -18,16 +18,17 @@ from typing import (
 )
 from uuid import uuid4
 
+from opfer.internal import attributes, operations
 from opfer.types import JsonValue
 
 type AttributeValue = JsonValue
 type Attributes = Mapping[str, AttributeValue]
 type MutableAttributes = MutableMapping[str, AttributeValue]
 
-type Timestamp = datetime
+type Datetime = datetime
 
 
-def now() -> Timestamp:
+def now() -> Datetime:
     return datetime.now(timezone.utc)
 
 
@@ -54,7 +55,7 @@ class SpanStatus:
 class SpanEvent:
     name: str
     attributes: Attributes
-    timestamp: Timestamp
+    timestamp: Datetime
 
 
 @dataclass
@@ -80,10 +81,10 @@ class ReadableSpan(Protocol):
     def attributes(self) -> Attributes: ...
 
     @property
-    def start_time(self) -> Timestamp: ...
+    def start_time(self) -> Datetime: ...
 
     @property
-    def end_time(self) -> Timestamp | None: ...
+    def end_time(self) -> Datetime | None: ...
 
     @property
     def events(self) -> Sequence[SpanEvent]: ...
@@ -98,7 +99,7 @@ class Span(Protocol):
     @property
     def is_recording(self) -> bool: ...
 
-    def end(self, end_time: Timestamp | None = None): ...
+    def end(self, end_time: Datetime | None = None): ...
 
     def update_name(self, name: str): ...
 
@@ -112,14 +113,14 @@ class Span(Protocol):
         self,
         name: str,
         attributes: Attributes | None = None,
-        timestamp: Timestamp | None = None,
+        timestamp: Datetime | None = None,
     ): ...
 
     def record_exception(
         self,
         error: BaseException,
         attributes: Attributes | None = None,
-        timestamp: Timestamp | None = None,
+        timestamp: Datetime | None = None,
     ): ...
 
     def add_link(
@@ -156,7 +157,7 @@ class Tracer(Protocol):
         parent: SpanContext | None = None,
         attributes: Attributes | None = None,
         links: Sequence[SpanLink] | None = None,
-        start_time: Timestamp | None = None,
+        start_time: Datetime | None = None,
     ) -> Span: ...
 
     @contextmanager
@@ -166,7 +167,7 @@ class Tracer(Protocol):
         context: SpanContext | None = None,
         attributes: Attributes | None = None,
         links: Sequence[SpanLink] | None = None,
-        start_time: Timestamp | None = None,
+        start_time: Datetime | None = None,
         record_exception: bool = True,
     ) -> Iterator[Span]: ...
 
@@ -230,8 +231,8 @@ class _Span(Span):
     parent: SpanContext | None
     status: SpanStatus
     attributes: MutableMapping[str, AttributeValue]
-    start_time: Timestamp
-    end_time: Timestamp | None
+    start_time: Datetime
+    end_time: Datetime | None
     events: MutableSequence[SpanEvent]
     links: MutableSequence[SpanLink]
 
@@ -242,7 +243,7 @@ class _Span(Span):
     def is_recording(self) -> bool:
         return True
 
-    def end(self, end_time: Timestamp | None = None):
+    def end(self, end_time: Datetime | None = None):
         if self.end_time is not None:
             raise RuntimeError("Span has already ended.")
         self.end_time = end_time or now()
@@ -265,7 +266,7 @@ class _Span(Span):
         self,
         name: str,
         attributes: Attributes | None = None,
-        timestamp: Timestamp | None = None,
+        timestamp: Datetime | None = None,
     ):
         event = SpanEvent(
             name=name,
@@ -278,7 +279,7 @@ class _Span(Span):
         self,
         error: BaseException,
         attributes: Attributes | None = None,
-        timestamp: Timestamp | None = None,
+        timestamp: Datetime | None = None,
     ):
         message = str(error)
         if hasattr(error, "__notes__") and error.__notes__:
@@ -312,21 +313,6 @@ class _Span(Span):
         self.links.append(link)
 
 
-def new_trace_id() -> str:
-    return str(uuid4())
-
-
-@contextmanager
-def trace(trace_id: str | None = None) -> Iterator[None]:
-    if trace_id is None:
-        trace_id = new_trace_id()
-    token = set_current_trace_id(trace_id)
-    try:
-        yield
-    finally:
-        reset_current_trace_id(token)
-
-
 def _new_span_id() -> str:
     return str(uuid4())
 
@@ -349,7 +335,7 @@ class _Tracer:
         parent: SpanContext | None = None,
         attributes: Attributes | None = None,
         links: Sequence[SpanLink] | None = None,
-        start_time: Timestamp | None = None,
+        start_time: Datetime | None = None,
     ) -> Span:
         if self._closed:
             raise RuntimeError("Tracer is closed.")
@@ -401,7 +387,7 @@ class _Tracer:
         context: SpanContext | None = None,
         attributes: Attributes | None = None,
         links: Sequence[SpanLink] | None = None,
-        start_time: Timestamp | None = None,
+        start_time: Datetime | None = None,
         record_exception: bool = True,
     ) -> Iterator[Span]:
         span = self.start_span(
@@ -444,3 +430,29 @@ class _Tracer:
 
 
 tracer: Tracer = _Tracer()
+
+
+def new_trace_id() -> str:
+    return str(uuid4())
+
+
+@contextmanager
+def trace(
+    description: str | None = None,
+    trace_id: str | None = None,
+) -> Iterator[None]:
+    if trace_id is None:
+        trace_id = new_trace_id()
+    token = set_current_trace_id(trace_id)
+    try:
+        with tracer.span(
+            operations.OPFER_TRACE,
+            attributes={
+                attributes.OPERATION_NAME: operations.OPFER_TRACE,
+                attributes.OPFER_TRACE_ID: trace_id,
+                attributes.DESCRIPTION: description,
+            },
+        ):
+            yield
+    finally:
+        reset_current_trace_id(token)

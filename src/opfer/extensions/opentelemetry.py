@@ -7,6 +7,7 @@ import opentelemetry.sdk.trace
 import opentelemetry.sdk.trace.export
 import opentelemetry.trace
 
+from opfer.internal import attributes
 from opfer.internal.tracing import (
     Attributes,
     ReadableSpan,
@@ -69,8 +70,8 @@ def _as_otel_links(link: SpanLink) -> opentelemetry.trace.Link:
         ),
         attributes={
             **(_as_otel_attributes(link.attributes) if link.attributes else {}),
-            "opfer.trace_id": link.context.trace_id,
-            "opfer.span_id": link.context.span_id,
+            attributes.OPFER_TRACE_ID: link.context.trace_id,
+            attributes.OPFER_SPAN_ID: link.context.span_id,
         },
     )
 
@@ -93,8 +94,8 @@ class OtelSpanProcessor:
         )
         otel_span.set_attributes(
             {
-                "opfer.trace_id": span.context.trace_id,
-                "opfer.span_id": span.context.span_id,
+                attributes.OPFER_TRACE_ID: span.context.trace_id,
+                attributes.OPFER_SPAN_ID: span.context.span_id,
             }
         )
         ctx = opentelemetry.trace.use_span(otel_span, end_on_exit=False)

@@ -17,7 +17,7 @@ from opfer.errors import (
     ModelRefusalError,
     ToolError,
 )
-from opfer.internal import attributes
+from opfer.internal import attributes, operations
 from opfer.internal.inspect import FuncSchema, get_func_schema
 from opfer.internal.tracing import tracer
 from opfer.types import (
@@ -453,9 +453,10 @@ class _Agent[T]:
         max_turns: int | None = None,
     ) -> AgentOutput[T]:
         with tracer.span(
-            f"agent run: {self._id}",
+            operations.OPFER_AGENT_RUN,
             attributes={
-                attributes.OPERATION_NAME: "agent_run",
+                attributes.OPERATION_NAME: operations.OPFER_AGENT_RUN,
+                attributes.DESCRIPTION: f"Running agent {self.display_name} ({self.id})",
                 attributes.AI_AGENT_ID: self._id,
                 attributes.AI_AGENT_NAME: self._display_name,
                 attributes.AI_AGENT_DESCRIPTION: self._description,
@@ -547,6 +548,7 @@ def _agent_as_tool[T](
 
 
 async def _run_agent_turn[T](
+    turn: int,
     agent: Agent[T],
     input: list[Content],
     instruction: Content | None,
@@ -564,18 +566,19 @@ async def _run_agent_turn[T](
 
     while True:
         with tracer.span(
-            f"agent step {agent.id} ({step})",
+            operations.OPFER_AGENT_STEP,
             attributes={
-                attributes.OPERATION_NAME: "agent_run_step",
+                attributes.OPERATION_NAME: operations.OPFER_AGENT_STEP,
+                attributes.DESCRIPTION: f"Running agent {agent.display_name} ({agent.id}): turn {turn}: step {step}",
                 attributes.AI_AGENT_RUN_STEP_NUMBER: step,
             },
         ):
             # TODO: if step reaches max, disable tool calling.
 
             with tracer.span(
-                f"agent chat {agent.model.provider}/{agent.model.name}",
+                operations.OPFER_AGENT_CHAT,
                 attributes={
-                    attributes.OPERATION_NAME: "agent_chat",
+                    attributes.OPERATION_NAME: operations.OPFER_AGENT_CHAT,
                     attributes.AI_INSTRUCTION: instruction.model_dump_json(
                         ensure_ascii=False,
                         exclude_unset=True,
@@ -708,13 +711,15 @@ async def _run_agent[T](
 
     while turn < (max_turns or 10):
         with tracer.span(
-            f"agent turn: {agent.id} ({turn})",
+            operations.OPFER_AGENT_TURN,
             attributes={
-                attributes.OPERATION_NAME: "agent_run_turn",
+                attributes.OPERATION_NAME: operations.OPFER_AGENT_TURN,
+                attributes.DESCRIPTION: f"Running agent {agent.display_name} ({agent.id}): turn {turn}",
                 attributes.AI_AGENT_RUN_TURN_NUMBER: turn,
             },
         ):
             response = await _run_agent_turn(
+                turn,
                 agent=agent,
                 input=input_normalized,
                 instruction=instruction,

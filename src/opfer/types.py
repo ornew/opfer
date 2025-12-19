@@ -8,11 +8,9 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from functools import cache
 from typing import (
-    Annotated,
     Any,
     Callable,
     Protocol,
@@ -21,7 +19,13 @@ from typing import (
 )
 
 from PIL import Image
-from pydantic import Base64Bytes, BaseModel, Field, PlainSerializer, TypeAdapter
+from pydantic import (
+    AwareDatetime,
+    Base64Bytes,
+    BaseModel,
+    Field,
+    TypeAdapter,
+)
 
 from opfer.internal.inspect import FuncSchema
 
@@ -213,16 +217,12 @@ class Usage(DataClass):
 
 ModalityTokenCountList = TypeAdapter(list[ModalityTokenCount])
 
-type Datetime = Annotated[
-    datetime, PlainSerializer(lambda dt: dt.isoformat(), return_type=str)
-]
-
 
 class AgentResponseMetadata(DataClass):
     id: str | None
     provider: str
     model: str
-    timestamp: Datetime
+    timestamp: AwareDatetime
     usage: Usage
 
 
