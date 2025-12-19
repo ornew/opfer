@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import google.genai
@@ -134,7 +134,7 @@ class GoogleAgentProviderChat(Chat):
             provider=self._provider.name,
             id=raw_response.response_id,
             model=raw_response.model_version or agent.model.name,
-            timestamp=raw_response.create_time or datetime.now(),
+            timestamp=raw_response.create_time or datetime.now(timezone.utc),
             usage=Usage(
                 total_tokens=usage.total_token_count,
                 input_tokens=usage.prompt_token_count,
