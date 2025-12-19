@@ -1,4 +1,4 @@
-from . import types
+from . import errors, types
 from .internal.core import (
     DefaultModelProviderRegistry,
     agent,
@@ -18,7 +18,9 @@ from .internal.core import (
     upload_artifact,
     upload_blob,
 )
+from .internal.retry import retry
 from .internal.tracing import (
+    ReadableSpan,
     Span,
     SpanContext,
     SpanEvent,
@@ -41,10 +43,12 @@ from .internal.workflow import Task, Workflow
 
 __all__ = [
     "types",
+    "errors",
     "agent",
     "tool",
     "Workflow",
     "Task",
+    "retry",
     "image_as_part",
     "download_blob",
     "upload_blob",
@@ -69,6 +73,7 @@ __all__ = [
     "SpanEvent",
     "SpanLink",
     "SpanProcessor",
+    "ReadableSpan",
     "Tracer",
     "get_current_span",
     "set_current_span",
