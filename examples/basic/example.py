@@ -9,58 +9,20 @@ from PIL import Image
 
 from opfer import (
     DefaultModelProviderRegistry,
-    Workflow,
+    InMemoryArtifactStorage,
     agent,
-    download_artifact,
+    get_artifact,
     get_current_span,
     get_model_provider_registry,
     reset_artifact_storage,
-    reset_blob_storage,
     reset_model_provider_registry,
     set_artifact_storage,
-    set_blob_storage,
     set_model_provider_registry,
     trace,
     tracer,
     upload_artifact,
 )
-from opfer.types import Blob, File, ModelConfig
-
-
-class InMemoryBlobStorage:
-    data: dict[str, Blob]
-
-    def __init__(self):
-        self.data = {}
-
-    async def exists(self, url: str) -> bool:
-        return url in self.data
-
-    async def download(self, url: str) -> Blob:
-        return self.data[url]
-
-    async def upload(self, blob: Blob) -> str:
-        url = f"blob://{blob.content_md5.decode()}"
-        self.data[url] = blob
-        return url
-
-
-class InMemoryArtifactStorage:
-    data: dict[str, File]
-
-    def __init__(self):
-        self.data = {}
-
-    async def exists(self, url: str) -> bool:
-        return url in self.data
-
-    async def download(self, url: str) -> File:
-        return self.data[url]
-
-    async def upload(self, file: File) -> str:
-        url = f"artifacts://{file.name}"
-        self.data[url] = file
-        return url
+from opfer.types import ArtifactUpload, ModelConfig
 
 
 async def add(a: float, b: float) -> float:
@@ -120,18 +82,19 @@ async def load_image() -> str:
     image = Image.open(filename)
     buf = io.BytesIO()
     image.save(buf, format="PNG")
-    file = File(
-        name=filename,
-        data=buf.getvalue(),
+    file = ArtifactUpload(
+        display_name=filename,
         mime_type="image/pil",
+        content=buf.getvalue(),
     )
-    url = await upload_artifact(file)
-    return url
+    upload = await upload_artifact(file)
+    return upload.uri
 
 
 async def help_about_image(image_url: str, question: str):
-    image_file = await download_artifact(image_url)
-    image = Image.open(io.BytesIO(image_file.data))
+    image_file = await get_artifact(image_url)
+    image_content = await image_file.download_as_bytes()
+    image = Image.open(io.BytesIO(image_content))
     res = await assistant_v1.run(
         [
             image,
@@ -143,12 +106,9 @@ async def help_about_image(image_url: str, question: str):
 
 
 async def my_workflow():
-    async with Workflow() as w:
-        url = w.run(load_image())
-        answer = url.then(
-            lambda u: help_about_image(u, "この画像の数字を３倍すると何になる？")
-        )
-        return await answer
+    url = await load_image()
+    answer = await help_about_image(url, "この画像の数字を３倍すると何になる？")
+    return answer
 
 
 @asynccontextmanager
@@ -196,11 +156,11 @@ async def configure_opfer_base():
     #     yield
     a = set_model_provider_registry(DefaultModelProviderRegistry())
     b = set_artifact_storage(InMemoryArtifactStorage())
-    c = set_blob_storage(InMemoryBlobStorage())
-    yield
-    reset_model_provider_registry(a)
-    reset_artifact_storage(b)
-    reset_blob_storage(c)
+    try:
+        yield
+    finally:
+        reset_model_provider_registry(a)
+        reset_artifact_storage(b)
 
 
 @asynccontextmanager

@@ -1,6 +1,8 @@
 # from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import io
 from collections.abc import Awaitable, Sequence
 from contextvars import ContextVar, Token
@@ -25,14 +27,13 @@ from opfer.types import (
     AgentOutput,
     AgentResponse,
     AgentTurnResult,
+    Artifact,
     ArtifactStorage,
-    Blob,
-    BlobStorage,
+    ArtifactUpload,
     Content,
     ContentLike,
     ContentListAdapter,
     ContentListLike,
-    File,
     JsonValue,
     ModalityTokenCountList,
     ModelConfig,
@@ -53,7 +54,6 @@ from opfer.types import (
 )
 
 _context_artifact_repository = ContextVar[ArtifactStorage]("artifact_storage")
-_context_blob_resolver = ContextVar[BlobStorage]("blob_storage")
 _context_model_provider_registry = ContextVar[ModelProviderRegistry](
     "model_provider_registry"
 )
@@ -71,32 +71,78 @@ def reset_artifact_storage(token: Token[ArtifactStorage]) -> None:
     _context_artifact_repository.reset(token)
 
 
-def get_blob_storage() -> BlobStorage:
-    return _context_blob_resolver.get()
+async def upload_artifact(upload: ArtifactUpload) -> Artifact:
+    return await get_artifact_storage().upload(upload)
 
 
-def set_blob_storage(resolver: BlobStorage) -> Token[BlobStorage]:
-    return _context_blob_resolver.set(resolver)
+async def get_artifact(uri: str) -> Artifact:
+    return await get_artifact_storage().get(uri)
 
 
-def reset_blob_storage(token: Token[BlobStorage]) -> None:
-    _context_blob_resolver.reset(token)
+@dataclass
+class _InMemoryArtifact(Artifact):
+    _uri: str
+    _mime_type: str
+    _size: int
+    _content: bytes
+    _content_md5: bytes
+    _display_name: str | None
+    _metadata: dict[str, str] | None
+
+    @property
+    def uri(self) -> str:
+        return self._uri
+
+    @property
+    def display_name(self) -> str | None:
+        return self._display_name
+
+    @property
+    def mime_type(self) -> str:
+        return self._mime_type
+
+    @property
+    def metadata(self) -> dict[str, str] | None:
+        return self._metadata
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @property
+    def content_md5(self) -> bytes:
+        return self._content_md5
+
+    async def download_as_bytes(self) -> bytes:
+        return self._content
 
 
-async def upload_artifact(file: File) -> str:
-    return await get_artifact_storage().upload(file)
+class InMemoryArtifactStorage:
+    data: dict[str, _InMemoryArtifact]
 
+    def __init__(self):
+        self.data = {}
 
-async def download_artifact(uri: str) -> File:
-    return await get_artifact_storage().download(uri)
+    async def exists(self, uri: str) -> bool:
+        return uri in self.data
 
+    async def get(self, uri: str) -> Artifact:
+        return self.data[uri]
 
-async def upload_blob(blob: Blob) -> str:
-    return await get_blob_storage().upload(blob)
-
-
-async def download_blob(uri: str) -> Blob:
-    return await get_blob_storage().download(uri)
+    async def upload(self, upload: ArtifactUpload) -> Artifact:
+        content_md5 = base64.b64encode(hashlib.md5(upload.content).digest())
+        size = len(upload.content)
+        uri = f"artifacts://{content_md5.decode()}"
+        self.data[uri] = file = _InMemoryArtifact(
+            _uri=uri,
+            _mime_type=upload.mime_type,
+            _size=size,
+            _content=upload.content,
+            _content_md5=content_md5,
+            _display_name=upload.display_name,
+            _metadata=upload.metadata,
+        )
+        return file
 
 
 def get_model_provider_registry() -> ModelProviderRegistry:
@@ -132,8 +178,8 @@ class DefaultModelProviderRegistry:
         return self._providers[name]
 
 
-async def download_part_blob(blob: PartBlob | PartFunctionResponsePartBlob) -> Blob:
-    downloaded = await download_blob(blob.uri)
+async def get_part_blob(blob: PartBlob | PartFunctionResponsePartBlob) -> Artifact:
+    downloaded = await get_artifact(blob.uri)
     assert downloaded.mime_type == blob.mime_type, (
         f"downloaded mime type {downloaded.mime_type} does not match, expected {blob.mime_type}"
     )
@@ -147,17 +193,17 @@ async def image_as_part(image: Image.Image, format: str = "webp") -> Part:
     buf = io.BytesIO()
     image.save(buf, format=format)
     data = buf.getvalue()
-    blob = Blob(
+    blob = ArtifactUpload(
+        display_name=f"image.{format.lower()}",
         mime_type=f"image/{format.lower()}",
-        data=data,
+        content=data,
     )
-    resolver = get_blob_storage()
-    uri = await resolver.upload(blob)
+    upload = await upload_artifact(blob)
     return Part(
         blob=PartBlob(
             mime_type=blob.mime_type,
-            uri=uri,
-            content_md5=blob.content_md5.decode(),
+            uri=upload.uri,
+            content_md5=upload.content_md5.decode(),
         )
     )
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 from collections.abc import (
     Awaitable,
     Mapping,
@@ -9,7 +7,6 @@ from collections.abc import (
 )
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import cache
 from typing import (
     Any,
     Callable,
@@ -36,32 +33,6 @@ type JsonValue = (
 type JsonComparableValue = None | str | int | float
 
 type JsonSchema = Mapping[str, JsonValue] | bool
-
-
-@dataclass(frozen=True)
-class Blob:
-    mime_type: str
-    data: bytes
-
-    @property
-    @cache
-    def content_md5(self):
-        """RFC1864: base64-encoded MD5 digests"""
-        return base64.b64encode(hashlib.md5(self.data).digest())
-
-
-@dataclass
-class File:
-    name: str
-    mime_type: str
-    data: bytes
-    metadata: dict[str, str] | None = field(default=None)
-
-    @property
-    @cache
-    def content_md5(self):
-        """RFC1864: base64-encoded MD5 digests"""
-        return base64.b64encode(hashlib.md5(self.data).digest())
 
 
 class DataClass(BaseModel):
@@ -359,13 +330,39 @@ class ModelProviderRegistry(Protocol):
     def get(self, name: str) -> ModelProvider: ...
 
 
+class Artifact(Protocol):
+    @property
+    def uri(self) -> str: ...
+
+    @property
+    def display_name(self) -> str | None: ...
+
+    @property
+    def mime_type(self) -> str: ...
+
+    @property
+    def metadata(self) -> dict[str, str] | None: ...
+
+    @property
+    def size(self) -> int: ...
+
+    @property
+    def content_md5(self) -> bytes:
+        """RFC1864: base64-encoded MD5 digests."""
+        ...
+
+    async def download_as_bytes(self) -> bytes: ...
+
+
+@dataclass
+class ArtifactUpload:
+    mime_type: str
+    content: bytes
+    display_name: str | None = field(default=None)
+    metadata: dict[str, str] | None = field(default=None)
+
+
 class ArtifactStorage(Protocol):
     async def exists(self, uri: str) -> bool: ...
-    async def download(self, uri: str) -> File: ...
-    async def upload(self, file: File) -> str: ...
-
-
-class BlobStorage(Protocol):
-    async def exists(self, uri: str) -> bool: ...
-    async def download(self, uri: str) -> Blob: ...
-    async def upload(self, blob: Blob) -> str: ...
+    async def get(self, uri: str) -> Artifact: ...
+    async def upload(self, upload: ArtifactUpload) -> Artifact: ...

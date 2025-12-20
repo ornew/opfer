@@ -16,15 +16,15 @@ from opfer.errors import (
 from opfer.internal.core import (
     Agent,
     Tool,
-    download_part_blob,
-    upload_blob,
+    get_part_blob,
+    upload_artifact,
 )
 from opfer.internal.logging import logger
 from opfer.internal.retry import retry
 from opfer.types import (
     AgentResponse,
     AgentResponseMetadata,
-    Blob,
+    ArtifactUpload,
     Chat,
     Content,
     MediaResolution,
@@ -344,11 +344,12 @@ class GoogleAgentProviderChat(Chat):
                     thought_signature=part.thought_signature,
                 )
             case PartBlob():
-                blob = await download_part_blob(t)
+                blob = await get_part_blob(t)
+                data = await blob.download_as_bytes()
                 return google.genai.types.Part(
                     thought_signature=part.thought_signature,
                     inline_data=google.genai.types.Blob(
-                        data=blob.data,
+                        data=data,
                         mime_type=blob.mime_type,
                     ),
                     media_resolution=google.genai.types.PartMediaResolution(
@@ -399,9 +400,10 @@ class GoogleAgentProviderChat(Chat):
     async def encode_function_response_blob(
         self, blob: PartFunctionResponsePartBlob
     ) -> google.genai.types.FunctionResponseBlob:
-        resolved = await download_part_blob(blob)
+        resolved = await get_part_blob(blob)
+        data = await resolved.download_as_bytes()
         return google.genai.types.FunctionResponseBlob(
-            data=resolved.data,
+            data=data,
             mime_type=resolved.mime_type,
         )
 
@@ -451,11 +453,12 @@ class GoogleAgentProviderChat(Chat):
             if d.mime_type is None:
                 raise RuntimeError("inline data mime type is None")
             if d.mime_type.startswith("image/"):
-                blob = Blob(
+                blob = ArtifactUpload(
+                    display_name="image." + d.mime_type.split("/", 1)[1],
                     mime_type=d.mime_type,
-                    data=d.data or b"",
+                    content=d.data or b"",
                 )
-                blob_uri = await upload_blob(blob)
+                upload = await upload_artifact(blob)
                 return Part(
                     thought_signature=part.thought_signature,
                     media_resolution=MediaResolution(
@@ -471,8 +474,8 @@ class GoogleAgentProviderChat(Chat):
                     else None,
                     blob=PartBlob(
                         mime_type=d.mime_type,
-                        uri=blob_uri,
-                        content_md5=blob.content_md5.decode(),
+                        uri=upload.uri,
+                        content_md5=upload.content_md5.decode(),
                     ),
                 )
             raise RuntimeError(f"unsupported inline data mime type: {d.mime_type}")
@@ -486,23 +489,6 @@ class GoogleAgentProviderChat(Chat):
                 ),
             )
         if part.function_response is not None:
-
-            async def _as_part_blob(
-                blob: google.genai.types.FunctionResponseBlob,
-            ) -> PartFunctionResponsePartBlob:
-                if blob.mime_type is None:
-                    raise RuntimeError("function response blob mime type is None")
-                resolved_blob = Blob(
-                    mime_type=blob.mime_type,
-                    data=blob.data or b"",
-                )
-                blob_uri = await upload_blob(resolved_blob)
-                return PartFunctionResponsePartBlob(
-                    mime_type=blob.mime_type,
-                    uri=blob_uri,
-                    content_md5=resolved_blob.content_md5.decode(),
-                )
-
             return Part(
                 function_response=PartFunctionResponse(
                     id=part.function_response.id or "",
@@ -510,7 +496,7 @@ class GoogleAgentProviderChat(Chat):
                     response=part.function_response.response,
                     parts=[
                         PartFunctionResponsePart(
-                            blob=await _as_part_blob(p.inline_data)
+                            blob=await self.decode_function_reponse_blob(p.inline_data)
                             if p.inline_data is not None
                             else None,
                         )
@@ -521,6 +507,24 @@ class GoogleAgentProviderChat(Chat):
                 ),
             )
         raise RuntimeError("unknown part type")
+
+    async def decode_function_reponse_blob(
+        self,
+        blob: google.genai.types.FunctionResponseBlob,
+    ) -> PartFunctionResponsePartBlob:
+        if blob.mime_type is None:
+            raise RuntimeError("function response blob mime type is None")
+        resolved_blob = ArtifactUpload(
+            display_name=blob.display_name or "data",
+            mime_type=blob.mime_type,
+            content=blob.data or b"",
+        )
+        upload = await upload_artifact(resolved_blob)
+        return PartFunctionResponsePartBlob(
+            mime_type=blob.mime_type,
+            uri=upload.uri,
+            content_md5=upload.content_md5.decode(),
+        )
 
     def decode_part_media_resolution_level(
         self, mr: google.genai.types.PartMediaResolutionLevel

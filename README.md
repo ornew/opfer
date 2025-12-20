@@ -85,8 +85,6 @@ assistant = agent(
 Build complex workflows with async task composition:
 
 ```python
-from opfer.workflow import Workflow
-
 async def load_data() -> str:
     # Load and process data
     return "processed_data"
@@ -96,10 +94,8 @@ async def analyze(data: str) -> str:
     return f"Analysis of {data}"
 
 async def my_workflow():
-    async with Workflow() as w:
-        data = w.run(load_data())
-        result = data.then(lambda d: analyze(d))
-        return await result
+    data = await load_data()
+    return await analyze(data)
 ```
 
 ### Artifact Management
@@ -111,7 +107,7 @@ import io
 
 from PIL import Image
 
-from opfer import upload_artifact, download_artifact
+from opfer import upload_artifact, get_artifact
 from opfer.types import File
 
 async def process_image():
@@ -121,15 +117,17 @@ async def process_image():
     image.save(buf, format="PNG")
 
     # Upload as artifact
-    file = File(
-        name="image.png",
-        data=buf.getvalue(),
+    uploaded = await upload_artifact(
+      ArtifactUpload(
+        display_name="image.png",
         mime_type="image/png",
+        content=buf.getvalue(),
+      )
     )
-    url = await upload_artifact(file)
 
     # Download artifact
-    downloaded = await download_artifact(url)
+    blob = await get_artifact(uploaded.uri)
+    downloaded = await blob.download_as_bytes()
     return downloaded
 ```
 
@@ -144,7 +142,6 @@ from opfer import DefaultModelProviderRegistry, set_model_provider_registry, set
 
 set_model_provider_registry(DefaultModelProviderRegistry())
 set_artifact_storage(InMemoryArtifactStorage())
-set_blob_storage(InMemoryBlobStorage())
 ```
 
 ### Observability
