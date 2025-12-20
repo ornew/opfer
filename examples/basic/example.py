@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -101,7 +100,14 @@ async def help_about_image(image_url: str, question: str):
             question,
         ]
     )
-    print(json.dumps(res.model_dump(), indent=2, ensure_ascii=False))
+    print(
+        res.model_dump_json(
+            indent=2,
+            exclude_none=True,
+            exclude_unset=True,
+            ensure_ascii=False,
+        )
+    )
     return res.final_output
 
 
