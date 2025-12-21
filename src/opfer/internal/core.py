@@ -424,9 +424,9 @@ class _Tool[**I, O](Tool[I]):
         with (
             as_current_tool_call_id(call_id),
             tracer.span(
-                f"call tool {self._schema.name}",
+                operations.OPFER_TOOL_CALL,
                 attributes={
-                    attributes.OPERATION_NAME: "tool_call",
+                    attributes.OPERATION_NAME: operations.OPFER_TOOL_CALL,
                     attributes.TOOL_NAME: self._schema.name,
                     attributes.TOOL_DESCRIPTION: self._schema.description or "",
                     attributes.TOOL_DEFINITION: _func_schema_as_tool_definition(
@@ -468,9 +468,9 @@ class _Tool[**I, O](Tool[I]):
         with (
             as_current_tool_call_id(call_id),
             tracer.span(
-                f"call tool {self._schema.name}",
+                operations.OPFER_TOOL_CALL,
                 attributes={
-                    attributes.OPERATION_NAME: "tool_call",
+                    attributes.OPERATION_NAME: operations.OPFER_TOOL_CALL,
                     attributes.TOOL_NAME: self._schema.name,
                     attributes.TOOL_DESCRIPTION: self._schema.description or "",
                     attributes.TOOL_DEFINITION: _func_schema_as_tool_definition(
