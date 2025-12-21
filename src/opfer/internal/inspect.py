@@ -36,7 +36,7 @@ def get_func_schema[**I, O](
     allow_positional_args: bool = True,
     strict_json_schema: bool = True,
 ) -> FuncSchema:
-    func_name = name or func.__name__
+    func_name = name or f"{func.__module__}.{func.__name__}"
     func_description = description or inspect.getdoc(func)
 
     type_hints_with_extras = get_type_hints(func, include_extras=True)
