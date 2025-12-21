@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 from collections.abc import Awaitable, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Callable
@@ -49,6 +50,8 @@ from opfer.types import (
     PartThought,
     Role,
     Tool,
+    ToolInterceptor,
+    ToolInterceptorContext,
     ToolLike,
     ToolResult,
 )
@@ -347,16 +350,65 @@ def _func_schema_as_tool_definition(schema: FuncSchema) -> JsonValue:
     return None
 
 
+_current_tool_call_id = ContextVar[str]("current_tool_call_id")
+
+
+def get_current_tool_call_id() -> str:
+    return _current_tool_call_id.get()
+
+
+@contextmanager
+def as_current_tool_call_id(call_id: str):
+    t = _current_tool_call_id.set(call_id)
+    try:
+        yield call_id
+    finally:
+        _current_tool_call_id.reset(t)
+
+
+# def example_cache_tool_interceptor[**I, O](
+#     fn: Callable[I, Awaitable[O]],
+#     ctx: ToolInterceptorContext,
+# ) -> Callable[I, Awaitable[O]]:
+#     cache_dir = Path("")
+#
+#     def calc_cache_key(input: BaseModel) -> str:
+#         input_json = input.model_dump_json(
+#             indent=None,
+#             ensure_ascii=False,
+#             exclude_unset=True,
+#             exclude_none=True,
+#         )
+#         sha256 = hashlib.sha256(input_json.encode()).digest()
+#         sha256_b64 = base64.urlsafe_b64encode(sha256).decode().rstrip("=")
+#         return sha256_b64
+#
+#     async def wrapper(*args: I.args, **kwargs: I.kwargs) -> O:
+#         key = calc_cache_key(ctx.input)
+#         path = cache_dir / key
+#         if path.exists():
+#             with path.open("r", encoding="utf-8") as f:
+#                 cached_output_json = f.read()
+#             output = ctx.schema.output_type.validate_json(cached_output_json)
+#             return output
+#         result = await fn(*args, **kwargs)
+#         return result
+#
+#     return wrapper
+
+
 @dataclass
 class _Tool[**I, O](Tool[I]):
     _func: Callable[I, Awaitable[O]]
     _schema: FuncSchema
+    _interceptors: list[ToolInterceptor[I, O]]
 
     def __init__(
         self,
         func: Callable[I, Awaitable[O]],
         name: str | None = None,
         description: str | None = None,
+        interceptors: Sequence[ToolInterceptor[I, O]] | None = None,
     ):
         self._func = func
         self._schema = get_func_schema(
@@ -365,24 +417,28 @@ class _Tool[**I, O](Tool[I]):
             description=description,
             # allow_positional_args=False,
         )
+        self._interceptors = list(interceptors or [])
 
     @property
     def schema(self) -> FuncSchema:
         return self._schema
 
     async def call(self, call_id: str, *args: I.args, **kwargs: I.kwargs) -> ToolResult:
-        with tracer.span(
-            f"call tool {self._schema.name}",
-            attributes={
-                attributes.OPERATION_NAME: "tool_call",
-                attributes.TOOL_NAME: self._schema.name,
-                attributes.TOOL_DESCRIPTION: self._schema.description or "",
-                attributes.TOOL_DEFINITION: _func_schema_as_tool_definition(
-                    self._schema
-                ),
-                attributes.TOOL_CALL_ID: call_id,
-            },
-        ) as s:
+        with (
+            as_current_tool_call_id(call_id),
+            tracer.span(
+                f"call tool {self._schema.name}",
+                attributes={
+                    attributes.OPERATION_NAME: "tool_call",
+                    attributes.TOOL_NAME: self._schema.name,
+                    attributes.TOOL_DESCRIPTION: self._schema.description or "",
+                    attributes.TOOL_DEFINITION: _func_schema_as_tool_definition(
+                        self._schema
+                    ),
+                    attributes.TOOL_CALL_ID: call_id,
+                },
+            ) as s,
+        ):
             try:
                 _args = {
                     **{
@@ -402,7 +458,15 @@ class _Tool[**I, O](Tool[I]):
                 s.record_exception(e)
                 return {"error": "Invalid input: " + repr(e)}
             try:
-                output = await self._func(*args, **kwargs)
+                ctx = ToolInterceptorContext(
+                    call_id=call_id,
+                    schema=self._schema,
+                    input=input,
+                )
+                fn = self._func
+                for interceptor in self._interceptors:
+                    fn = interceptor(fn, ctx)
+                output = await fn(*args, **kwargs)
                 output_json = self._schema.output_type.dump_python(output)
                 s.set_attribute(
                     attributes.TOOL_CALL_OUTPUT,
@@ -414,9 +478,18 @@ class _Tool[**I, O](Tool[I]):
                 return {"error": str(e)}
 
 
-def tool(name: str | None = None, description: str | None = None):
-    def decorator[**I, O](func: Callable[I, Awaitable[O]]) -> _Tool[I, O]:
-        return _Tool[I, O](func, name=name, description=description)
+def tool[**I, O](
+    name: str | None = None,
+    description: str | None = None,
+    interceptors: Sequence[ToolInterceptor[I, O]] | None = None,
+):
+    def decorator(func: Callable[I, Awaitable[O]]) -> _Tool[I, O]:
+        return _Tool[I, O](
+            func,
+            name=name,
+            description=description,
+            interceptors=interceptors,
+        )
 
     return decorator
 

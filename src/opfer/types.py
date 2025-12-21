@@ -247,7 +247,18 @@ class ToolOutputError(TypedDict):
     error: JsonValue
 
 
+@dataclass
+class ToolInterceptorContext:
+    call_id: str
+    schema: FuncSchema
+    input: BaseModel
+
+
 type ToolResult = ToolOutput | ToolOutputError
+type ToolFunc[**I, O] = Callable[I, Awaitable[O]]
+type ToolInterceptor[**I, O] = Callable[
+    [ToolFunc[I, O], ToolInterceptorContext], ToolFunc[I, O]
+]
 
 
 @runtime_checkable
