@@ -266,6 +266,9 @@ class Tool[**I](Protocol):
     @property
     def schema(self) -> FuncSchema: ...
 
+    @property
+    def md5(self) -> bytes: ...
+
     async def call(
         self,
         call_id: str,
@@ -298,6 +301,9 @@ class Agent[T](Protocol):
 
     @property
     def tools(self) -> Sequence[Tool]: ...
+
+    @property
+    def md5(self) -> bytes: ...
 
     async def run(
         self,

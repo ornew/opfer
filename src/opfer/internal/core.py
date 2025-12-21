@@ -4,11 +4,12 @@ import asyncio
 import base64
 import hashlib
 import io
-from collections.abc import Awaitable, Sequence
+import uuid
+from collections.abc import Awaitable, Buffer, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Protocol, assert_never
 
 from PIL import Image
 from pydantic import ValidationError
@@ -350,6 +351,23 @@ def _func_schema_as_tool_definition(schema: FuncSchema) -> JsonValue:
     return None
 
 
+class _Hasher(Protocol):
+    def update(self, buffer: Buffer, /) -> None: ...
+
+
+def _hash_func(hasher: _Hasher, func: Callable):
+    code = func.__code__
+    attributes = [
+        code.co_code,
+        code.co_consts,
+        code.co_names,
+        code.co_varnames,
+    ]
+
+    for attr in attributes:
+        hasher.update(str(attr).encode())
+
+
 _current_tool_call_id = ContextVar[str]("current_tool_call_id")
 
 
@@ -366,42 +384,12 @@ def as_current_tool_call_id(call_id: str):
         _current_tool_call_id.reset(t)
 
 
-# def example_cache_tool_interceptor[**I, O](
-#     fn: Callable[I, Awaitable[O]],
-#     ctx: ToolInterceptorContext,
-# ) -> Callable[I, Awaitable[O]]:
-#     cache_dir = Path("")
-#
-#     def calc_cache_key(input: BaseModel) -> str:
-#         input_json = input.model_dump_json(
-#             indent=None,
-#             ensure_ascii=False,
-#             exclude_unset=True,
-#             exclude_none=True,
-#         )
-#         sha256 = hashlib.sha256(input_json.encode()).digest()
-#         sha256_b64 = base64.urlsafe_b64encode(sha256).decode().rstrip("=")
-#         return sha256_b64
-#
-#     async def wrapper(*args: I.args, **kwargs: I.kwargs) -> O:
-#         key = calc_cache_key(ctx.input)
-#         path = cache_dir / key
-#         if path.exists():
-#             with path.open("r", encoding="utf-8") as f:
-#                 cached_output_json = f.read()
-#             output = ctx.schema.output_type.validate_json(cached_output_json)
-#             return output
-#         result = await fn(*args, **kwargs)
-#         return result
-#
-#     return wrapper
-
-
 @dataclass
 class _Tool[**I, O](Tool[I]):
     _func: Callable[I, Awaitable[O]]
     _schema: FuncSchema
     _interceptors: list[ToolInterceptor[I, O]]
+    _md5: bytes
 
     def __init__(
         self,
@@ -419,9 +407,62 @@ class _Tool[**I, O](Tool[I]):
         )
         self._interceptors = list(interceptors or [])
 
+        hasher = hashlib.md5()
+        _hash_func(hasher, func)
+        self._md5 = base64.b64encode(hasher.digest())
+
     @property
     def schema(self) -> FuncSchema:
         return self._schema
+
+    @property
+    def md5(self) -> bytes:
+        return self._md5
+
+    async def __call__(self, *args: I.args, **kwargs: I.kwargs) -> O:
+        call_id = f"direct_call_{uuid.uuid4().hex[:16]}"
+        with (
+            as_current_tool_call_id(call_id),
+            tracer.span(
+                f"call tool {self._schema.name}",
+                attributes={
+                    attributes.OPERATION_NAME: "tool_call",
+                    attributes.TOOL_NAME: self._schema.name,
+                    attributes.TOOL_DESCRIPTION: self._schema.description or "",
+                    attributes.TOOL_DEFINITION: _func_schema_as_tool_definition(
+                        self._schema
+                    ),
+                    attributes.TOOL_CALL_ID: call_id,
+                },
+            ) as s,
+        ):
+            _args = {
+                **{
+                    k: v
+                    for k, v in zip(self._schema.input_model.model_fields.keys(), args)
+                },
+                **kwargs,
+            }
+            input = self._schema.input_model.model_validate(_args)
+            s.set_attribute(
+                attributes.TOOL_CALL_INPUT,
+                input.model_dump(),
+            )
+            ctx = ToolInterceptorContext(
+                call_id=call_id,
+                schema=self._schema,
+                input=input,
+            )
+            fn = self._func
+            for interceptor in self._interceptors:
+                fn = interceptor(fn, ctx)
+            output = await fn(*args, **kwargs)
+            output_json = self._schema.output_type.dump_python(output)
+            s.set_attribute(
+                attributes.TOOL_CALL_OUTPUT,
+                output_json,
+            )
+            return output
 
     async def call(self, call_id: str, *args: I.args, **kwargs: I.kwargs) -> ToolResult:
         with (
@@ -456,26 +497,30 @@ class _Tool[**I, O](Tool[I]):
                 )
             except ValidationError as e:
                 s.record_exception(e)
-                return {"error": "Invalid input: " + repr(e)}
+                return {"error": "invalid input: " + repr(e)}
+            ctx = ToolInterceptorContext(
+                call_id=call_id,
+                schema=self._schema,
+                input=input,
+            )
+            fn = self._func
+            for interceptor in self._interceptors:
+                fn = interceptor(fn, ctx)
             try:
-                ctx = ToolInterceptorContext(
-                    call_id=call_id,
-                    schema=self._schema,
-                    input=input,
-                )
-                fn = self._func
-                for interceptor in self._interceptors:
-                    fn = interceptor(fn, ctx)
                 output = await fn(*args, **kwargs)
+            except ToolError as e:
+                s.record_exception(e)
+                return {"error": str(e)}
+            try:
                 output_json = self._schema.output_type.dump_python(output)
                 s.set_attribute(
                     attributes.TOOL_CALL_OUTPUT,
                     output_json,
                 )
                 return {"output": output_json}
-            except ToolError as e:
+            except ValidationError as e:
                 s.record_exception(e)
-                return {"error": str(e)}
+                return {"error": "internal error: invalid output: " + repr(e)}
 
 
 def tool[**I, O](
@@ -510,6 +555,45 @@ def _as_tool(fn: ToolLike) -> Tool:
     return tool_instance
 
 
+def _hash_part_like(hasher: _Hasher, part: PartLike):
+    match part:
+        case str():
+            hasher.update(part.encode("utf-8"))
+        case Image.Image():
+            hasher.update(part.tobytes())
+        case Part():
+            hasher.update(
+                part.model_dump_json(
+                    indent=None,
+                    exclude_unset=True,
+                    exclude_none=True,
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+        case _:
+            assert_never(part)
+
+
+def _hash_content_like(hasher: _Hasher, content: ContentLike):
+    match content:
+        case Content():
+            hasher.update(
+                content.model_dump_json(
+                    indent=None,
+                    exclude_unset=True,
+                    exclude_none=True,
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+        case Sequence():
+            for item in content:
+                _hash_part_like(hasher, item)
+        case str() | Image.Image() | Part():
+            _hash_part_like(hasher, content)
+        case _:
+            assert_never(content)
+
+
 class _Agent[T]:
     _id: str
     _display_name: str
@@ -518,6 +602,7 @@ class _Agent[T]:
     _model: ModelConfig
     _output_type: type[T] | None
     _tools: list[Tool]
+    _md5: bytes
 
     def __init__(
         self,
@@ -537,6 +622,22 @@ class _Agent[T]:
         self._model = model
         self._output_type = output_type
         self._tools = [_as_tool(t) for t in tools or []]
+
+        hasher = hashlib.md5()
+        hasher.update(self._id.encode("utf-8"))
+        _hash_content_like(hasher, self._instruction)
+        hasher.update(repr(self._output_type).encode("utf-8"))
+        hasher.update(
+            self._model.model_dump_json(
+                indent=None,
+                exclude_unset=True,
+                exclude_none=True,
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        for tool in self._tools:
+            hasher.update(tool.md5)
+        self._md5 = base64.b64encode(hasher.digest())
 
     @property
     def id(self) -> str:
@@ -565,6 +666,10 @@ class _Agent[T]:
     @property
     def tools(self) -> Sequence[Tool]:
         return self._tools
+
+    @property
+    def md5(self) -> bytes:
+        return self._md5
 
     async def run(
         self,
