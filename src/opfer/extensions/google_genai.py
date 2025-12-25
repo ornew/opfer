@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timezone
 from typing import Any
 
@@ -436,7 +437,9 @@ class GoogleAgentProviderChat(Chat):
     async def decode_part(self, part: google.genai.types.Part) -> Part:
         if part.thought:
             return Part(
-                thought_signature=part.thought_signature,
+                thought_signature=base64.b64encode(part.thought_signature)
+                if part.thought_signature
+                else None,
                 thought=PartThought(
                     text=part.text,
                     is_summary=True,
@@ -444,7 +447,9 @@ class GoogleAgentProviderChat(Chat):
             )
         if part.text is not None:
             return Part(
-                thought_signature=part.thought_signature,
+                thought_signature=base64.b64encode(part.thought_signature)
+                if part.thought_signature
+                else None,
                 text=PartText(
                     text=part.text,
                 ),
@@ -460,7 +465,9 @@ class GoogleAgentProviderChat(Chat):
                 )
                 upload = await upload_artifact(blob)
                 return Part(
-                    thought_signature=part.thought_signature,
+                    thought_signature=base64.b64encode(part.thought_signature)
+                    if part.thought_signature
+                    else None,
                     media_resolution=MediaResolution(
                         level=self.decode_part_media_resolution_level(
                             part.media_resolution.level
@@ -481,7 +488,9 @@ class GoogleAgentProviderChat(Chat):
             raise RuntimeError(f"unsupported inline data mime type: {d.mime_type}")
         if part.function_call is not None:
             return Part(
-                thought_signature=part.thought_signature,
+                thought_signature=base64.b64encode(part.thought_signature)
+                if part.thought_signature
+                else None,
                 function_call=PartFunctionCall(
                     id=part.function_call.id or "",
                     name=part.function_call.name or "",
