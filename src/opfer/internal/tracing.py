@@ -403,7 +403,6 @@ class _Tracer:
         except Exception as e:
             span.set_status(SpanStatusValue.ERROR)
             if record_exception:
-                print(f"Recording exception in span: {e}\n{span}")
                 span.record_exception(e)
             raise
         finally:
