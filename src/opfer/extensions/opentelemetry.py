@@ -1,9 +1,7 @@
 import json
-from typing import ContextManager, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import ContextManager
 
-import opentelemetry.sdk.resources
-import opentelemetry.sdk.trace
-import opentelemetry.sdk.trace.export
 import opentelemetry.trace
 
 from opfer.internal import attributes
@@ -17,10 +15,29 @@ from opfer.internal.tracing import (
 )
 from opfer.types import JsonValue
 
+type OtelAttributeValue = (
+    str
+    | bool
+    | int
+    | float
+    | Sequence[str]
+    | Sequence[bool]
+    | Sequence[int]
+    | Sequence[float]
+)
 
-def _as_otel_attribute_value(
-    value: JsonValue,
-) -> str | int | float | bool | list[str] | list[bool] | list[float] | list[str] | None:
+type OtelAttributes = Mapping[str, OtelAttributeValue]
+
+
+def _dump_json(value: JsonValue) -> str:
+    return json.dumps(
+        value,
+        indent=None,
+        ensure_ascii=False,
+    )
+
+
+def _as_otel_attribute_value(value: JsonValue) -> OtelAttributeValue | None:
     match value:
         case None:
             return None
@@ -32,26 +49,13 @@ def _as_otel_attribute_value(
             return value
         case float():
             return value
-        case _:
-            if isinstance(value, Sequence):
-                return json.dumps(value)
-            if isinstance(value, Mapping):
-                return json.dumps(value)
+        case Sequence():
+            return _dump_json(value)
+        case Mapping():
+            return _dump_json(value)
 
 
-def _as_otel_attributes(
-    attributes: Attributes,
-) -> Mapping[
-    str,
-    str
-    | int
-    | float
-    | bool
-    | Sequence[str]
-    | Sequence[bool]
-    | Sequence[float]
-    | Sequence[str],
-]:
+def _as_otel_attributes(attributes: Attributes) -> OtelAttributes:
     c = {key: _as_otel_attribute_value(value) for key, value in attributes.items()}
     return {key: value for key, value in c.items() if value is not None}
 
