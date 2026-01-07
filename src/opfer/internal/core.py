@@ -9,10 +9,10 @@ from collections.abc import Awaitable, Buffer, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Callable, Protocol, assert_never
+from typing import Any, Callable, Protocol, assert_never
 
 from PIL import Image
-from pydantic import ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from opfer.errors import (
     MaxStepsExceeded,
@@ -56,6 +56,22 @@ from opfer.types import (
     ToolLike,
     ToolResult,
 )
+
+
+def _dump_adapter(adapter: TypeAdapter, ins: Any) -> dict[str, Any]:
+    return adapter.dump_python(
+        ins,
+        exclude_unset=True,
+        exclude_none=True,
+    )
+
+
+def _dump_model(model: BaseModel) -> dict[str, Any]:
+    return model.model_dump(
+        exclude_unset=True,
+        exclude_none=True,
+    )
+
 
 _context_artifact_repository = ContextVar[ArtifactStorage]("artifact_storage")
 _context_model_provider_registry = ContextVar[ModelProviderRegistry](
@@ -457,10 +473,10 @@ class _Tool[**I, O](Tool[I]):
             for interceptor in self._interceptors:
                 fn = interceptor(fn, ctx)
             output = await fn(*args, **kwargs)
-            output_json = self._schema.output_type.dump_python(output)
+            output_obj = self._schema.output_type.dump_python(output)
             s.set_attribute(
                 attributes.TOOL_CALL_OUTPUT,
-                output_json,
+                output_obj,
             )
             return output
 
@@ -512,12 +528,12 @@ class _Tool[**I, O](Tool[I]):
                 s.record_exception(e)
                 return {"error": str(e)}
             try:
-                output_json = self._schema.output_type.dump_python(output)
+                output_obj = self._schema.output_type.dump_python(output)
                 s.set_attribute(
                     attributes.TOOL_CALL_OUTPUT,
-                    output_json,
+                    output_obj,
                 )
-                return {"output": output_json}
+                return {"output": output_obj}
             except ValidationError as e:
                 s.record_exception(e)
                 return {"error": "internal error: invalid output: " + repr(e)}
@@ -761,8 +777,6 @@ def _agent_as_tool[T](
 ) -> _Tool[[str], T]:
     async def tool_func(input: str) -> T:
         output = await agent.run(input)
-
-        # print(json.dumps(output.model_dump(), indent=2, ensure_ascii=False))
         return output.final_output
 
     return tool(
@@ -803,19 +817,13 @@ async def _run_agent_turn[T](
                 operations.OPFER_AGENT_CHAT,
                 attributes={
                     attributes.OPERATION_NAME: operations.OPFER_AGENT_CHAT,
-                    attributes.AI_INSTRUCTION: instruction.model_dump_json(
-                        ensure_ascii=False,
-                        exclude_unset=True,
-                        exclude_none=True,
-                    )
+                    attributes.AI_INSTRUCTION: _dump_model(instruction)
                     if instruction
                     else None,
-                    attributes.AI_INPUT: ContentListAdapter.dump_json(
+                    attributes.AI_INPUT: _dump_adapter(
+                        ContentListAdapter,
                         chat.history + current_input,
-                        ensure_ascii=False,
-                        exclude_unset=True,
-                        exclude_none=True,
-                    ).decode(),
+                    ),
                     attributes.AI_REQUEST_PROVIDER: agent.model.provider,
                     attributes.AI_REQUEST_MODEL: agent.model.name,
                     attributes.AI_REQUEST_TEMPERATURE: agent.model.temperature,
@@ -843,32 +851,26 @@ async def _run_agent_turn[T](
                             attributes.AI_RESPONSE_TIMESTAMP: response.metadata.timestamp.isoformat(),
                             attributes.AI_RESPONSE_FINISH_REASON: response.finish_reason,
                             attributes.AI_USAGE_INPUT_TOKENS: response.metadata.usage.input_tokens,
-                            attributes.AI_USAGE_INPUT_TOKENS_DETAILS: ModalityTokenCountList.dump_json(
+                            attributes.AI_USAGE_INPUT_TOKENS_DETAILS: _dump_adapter(
+                                ModalityTokenCountList,
                                 response.metadata.usage.input_tokens_details,
-                                ensure_ascii=False,
-                                exclude_unset=True,
-                                exclude_none=True,
-                            ).decode()
+                            )
                             if response.metadata.usage.input_tokens_details
                             else None,
                             attributes.AI_USAGE_OUTPUT_TOKENS: response.metadata.usage.output_tokens,
                             attributes.AI_USAGE_THOUGHT_TOKENS: response.metadata.usage.thought_tokens,
                             attributes.AI_USAGE_CACHED_TOKENS: response.metadata.usage.cached_tokens,
-                            attributes.AI_USAGE_CACHED_TOKENS_DETAILS: ModalityTokenCountList.dump_json(
+                            attributes.AI_USAGE_CACHED_TOKENS_DETAILS: _dump_adapter(
+                                ModalityTokenCountList,
                                 response.metadata.usage.cached_tokens_details,
-                                ensure_ascii=False,
-                                exclude_unset=True,
-                                exclude_none=True,
-                            ).decode()
+                            )
                             if response.metadata.usage.cached_tokens_details
                             else None,
                             attributes.AI_USAGE_TOTAL_TOKENS: response.metadata.usage.total_tokens,
-                            attributes.AI_OUTPUT: ContentListAdapter.dump_json(
+                            attributes.AI_OUTPUT: _dump_adapter(
+                                ContentListAdapter,
                                 response.output,
-                                ensure_ascii=False,
-                                exclude_unset=True,
-                                exclude_none=True,
-                            ).decode(),
+                            ),
                         }
                     )
                 except ModelRefusalError as e:
