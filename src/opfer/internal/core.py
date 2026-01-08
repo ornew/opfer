@@ -61,6 +61,7 @@ from opfer.types import (
 def _dump_adapter(adapter: TypeAdapter, ins: Any) -> dict[str, Any]:
     return adapter.dump_python(
         ins,
+        mode="json",
         exclude_unset=True,
         exclude_none=True,
     )
@@ -68,6 +69,7 @@ def _dump_adapter(adapter: TypeAdapter, ins: Any) -> dict[str, Any]:
 
 def _dump_model(model: BaseModel) -> dict[str, Any]:
     return model.model_dump(
+        mode="json",
         exclude_unset=True,
         exclude_none=True,
     )
@@ -462,7 +464,7 @@ class _Tool[**I, O](Tool[I]):
             input = self._schema.input_model.model_validate(_args)
             s.set_attribute(
                 attributes.TOOL_CALL_INPUT,
-                input.model_dump(),
+                _dump_model(input),
             )
             ctx = ToolInterceptorContext(
                 call_id=call_id,
@@ -473,7 +475,7 @@ class _Tool[**I, O](Tool[I]):
             for interceptor in self._interceptors:
                 fn = interceptor(fn, ctx)
             output = await fn(*args, **kwargs)
-            output_obj = self._schema.output_type.dump_python(output)
+            output_obj = _dump_adapter(self._schema.output_type, output)
             s.set_attribute(
                 attributes.TOOL_CALL_OUTPUT,
                 output_obj,
@@ -509,7 +511,7 @@ class _Tool[**I, O](Tool[I]):
                 input = self._schema.input_model.model_validate(_args)
                 s.set_attribute(
                     attributes.TOOL_CALL_INPUT,
-                    input.model_dump(),
+                    _dump_model(input),
                 )
             except ValidationError as e:
                 s.record_exception(e)
@@ -528,7 +530,7 @@ class _Tool[**I, O](Tool[I]):
                 s.record_exception(e)
                 return {"error": str(e)}
             try:
-                output_obj = self._schema.output_type.dump_python(output)
+                output_obj = _dump_adapter(self._schema.output_type, output)
                 s.set_attribute(
                     attributes.TOOL_CALL_OUTPUT,
                     output_obj,
